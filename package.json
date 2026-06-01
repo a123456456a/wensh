@@ -1,0 +1,16 @@
+{
+  "name": "wensh",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,green \"pnpm --filter @wensh/server dev\" \"pnpm --filter @wensh/web dev\"",
+    "seed": "pnpm --filter @wensh/server seed",
+    "test": "pnpm --filter @wensh/server test",
+    "build": "pnpm --filter @wensh/shared build && pnpm --filter @wensh/server build && pnpm --filter @wensh/web build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  }
+}
