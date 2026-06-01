@@ -99,7 +99,8 @@ function createTables(db: ReturnType<typeof getWritableDb>): void {
  */
 export function seedDatabase(): void {
   const scale = getSeedScale();
-  const lineCount = Math.max(5, Math.round(50 * scale));
+  /** 产线固定 5 条（A～E 线），不随 SEED_SCALE 增减 */
+  const lineCount = LINE_NAMES.length;
   const workOrderCount = Math.max(100, Math.round(50000 * scale));
   const qualityCount = Math.max(100, Math.round(50000 * scale));
   const shiftCount = Math.max(50, Math.round(30000 * scale));
@@ -118,7 +119,7 @@ export function seedDatabase(): void {
   const lineIds: number[] = [];
   for (let i = 0; i < lineCount; i++) {
     const id = i + 1;
-    const name = LINE_NAMES[i % LINE_NAMES.length];
+    const name = LINE_NAMES[i];
     insertLine.run(
       id,
       name,

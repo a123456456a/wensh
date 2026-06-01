@@ -19,6 +19,7 @@ import {
   getModelName,
   routeModel,
 } from "./modelRouter.js";
+import { QueryChainError } from "./queryChainError.js";
 
 /**
  * 构建 history 上下文 Prompt 片段
@@ -30,7 +31,9 @@ function buildHistoryContext(history?: HistoryItem[]): string {
 
   const recent = history.slice(-2);
   const lines = recent.map((item, idx) => {
-    return `- 第${idx + 1}轮问题：${item.question} | 生成的SQL：${item.sql}`;
+    const roundLabel =
+      recent.length === 1 || idx === recent.length - 1 ? "上一轮" : "上两轮";
+    return `- ${roundLabel}问题：${item.question} | 生成的SQL：${item.sql}`;
   });
 
   return `以下是最近对话，当前问题可能是追问，请结合上下文理解：\n${lines.join("\n")}\n`;
@@ -68,7 +71,7 @@ ${historyContext}
 6. 不要解释，只输出 SQL`;
 
   if (errorFeedback) {
-    prompt += `\n\n上次生成的 SQL 执行失败，错误信息：${errorFeedback}\n请修正后重新生成。`;
+    prompt += `\n\n上次生成失败，错误信息：${errorFeedback}\n请修正后重新生成。`;
   }
 
   return prompt;
@@ -107,7 +110,7 @@ function executeSql(sql: string): {
 }
 
 /**
- * 调用 LLM 生成并校验 SQL
+ * 调用 LLM 生成并校验 SQL（失败抛出 QueryChainError）
  */
 async function invokeSqlGeneration(
   model: ReturnType<typeof getModel>,
@@ -124,37 +127,69 @@ async function invokeSqlGeneration(
 
   const sql = extractSql(content);
   if (!sql) {
-    throw new Error("未能从模型输出中提取 SQL");
+    throw new QueryChainError("未能从模型输出中提取 SQL");
   }
 
-  assertSqlSafe(sql);
+  try {
+    assertSqlSafe(sql);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new QueryChainError(msg, { sql });
+  }
+
   return sql;
 }
 
 /**
- * 生成 SQL 并执行（含一次重试）
+ * 生成 SQL 并执行（提取失败或执行失败均可重试 1 次）
  */
 async function generateAndExecuteSql(
   model: ReturnType<typeof getModel>,
   question: string,
   history?: HistoryItem[],
+  chainContext?: { model_used: QuerySuccessResponse["model_used"]; model_name: string },
 ): Promise<{ sql: string; columns: string[]; rows: Record<string, unknown>[]; sqlGenMs: number; execMs: number }> {
   const genStart = Date.now();
-  let sql = await invokeSqlGeneration(model, question, history);
-  let sqlGenMs = Date.now() - genStart;
+  let lastSql: string | undefined;
+  let lastError = "SQL 生成或执行失败";
 
-  const execStart = Date.now();
-  try {
-    const result = executeSql(sql);
-    return { sql, ...result, sqlGenMs, execMs: Date.now() - execStart };
-  } catch (firstErr) {
-    const errMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
-    const retryStart = Date.now();
-    sql = await invokeSqlGeneration(model, question, history, errMsg);
-    sqlGenMs += Date.now() - retryStart;
-    const result = executeSql(sql);
-    return { sql, ...result, sqlGenMs, execMs: Date.now() - execStart };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const sql = await invokeSqlGeneration(
+        model,
+        question,
+        history,
+        attempt > 0 ? lastError : undefined,
+      );
+      lastSql = sql;
+      const execStart = Date.now();
+      const result = executeSql(sql);
+      return {
+        sql,
+        ...result,
+        sqlGenMs: Date.now() - genStart,
+        execMs: Date.now() - execStart,
+      };
+    } catch (err) {
+      if (err instanceof QueryChainError && err.context.sql) {
+        lastSql = err.context.sql;
+      }
+      lastError = err instanceof Error ? err.message : String(err);
+      if (attempt === 1) {
+        throw new QueryChainError(lastError, {
+          sql: lastSql,
+          model_used: chainContext?.model_used,
+          model_name: chainContext?.model_name,
+        });
+      }
+    }
   }
+
+  throw new QueryChainError(lastError, {
+    sql: lastSql,
+    model_used: chainContext?.model_used,
+    model_name: chainContext?.model_name,
+  });
 }
 
 /**
@@ -205,48 +240,64 @@ export async function runQueryChain(
   const modelName = getModelName(route.type);
   const routeMs = Date.now() - routeStart;
 
-  const { sql, columns, rows, sqlGenMs, execMs } = await generateAndExecuteSql(
-    model,
-    request.question,
-    history,
-  );
+  const chainContext = { model_used: route.type, model_name: modelName };
 
-  const timing: QueryTiming = {
-    route_ms: routeMs,
-    sql_gen_ms: sqlGenMs,
-    exec_ms: execMs,
-    interpret_ms: 0,
-  };
+  try {
+    const { sql, columns, rows, sqlGenMs, execMs } = await generateAndExecuteSql(
+      model,
+      request.question,
+      history,
+      chainContext,
+    );
 
-  const response: QuerySuccessResponse = {
-    sql,
-    columns,
-    rows,
-    model_used: route.type,
-    model_name: modelName,
-    fallback_reason: route.fallbackReason ?? null,
-    row_count: rows.length,
-    elapsed_ms: Date.now() - totalStart,
-    timing,
-  };
+    const timing: QueryTiming = {
+      route_ms: routeMs,
+      sql_gen_ms: sqlGenMs,
+      exec_ms: execMs,
+      interpret_ms: 0,
+    };
 
-  if (interpret && rows.length > 0) {
-    const interpretStart = Date.now();
-    const interpretPrompt = buildInterpretPrompt(request.question, rows);
-    const interpretResponse = await model.invoke([
-      new HumanMessage(interpretPrompt),
-    ]);
-    const interpretText =
-      typeof interpretResponse.content === "string"
-        ? interpretResponse.content
-        : JSON.stringify(interpretResponse.content);
+    const response: QuerySuccessResponse = {
+      sql,
+      columns,
+      rows,
+      model_used: route.type,
+      model_name: modelName,
+      fallback_reason: route.fallbackReason ?? null,
+      row_count: rows.length,
+      elapsed_ms: Date.now() - totalStart,
+      timing,
+    };
 
-    const chartHint = extractChartHint(interpretText) ?? inferChartHint(columns, rows);
-    response.interpretation = stripChartTag(interpretText);
-    response.chart_hint = chartHint;
-    timing.interpret_ms = Date.now() - interpretStart;
-    response.elapsed_ms = Date.now() - totalStart;
+    if (interpret && rows.length > 0) {
+      const interpretStart = Date.now();
+      const interpretPrompt = buildInterpretPrompt(request.question, rows);
+      const interpretResponse = await model.invoke([
+        new HumanMessage(interpretPrompt),
+      ]);
+      const interpretText =
+        typeof interpretResponse.content === "string"
+          ? interpretResponse.content
+          : JSON.stringify(interpretResponse.content);
+
+      const chartHint =
+        extractChartHint(interpretText) ?? inferChartHint(columns, rows);
+      response.interpretation = stripChartTag(interpretText);
+      response.chart_hint = chartHint;
+      timing.interpret_ms = Date.now() - interpretStart;
+      response.elapsed_ms = Date.now() - totalStart;
+    }
+
+    return response;
+  } catch (err) {
+    if (err instanceof QueryChainError) {
+      throw err;
+    }
+    throw new QueryChainError(
+      err instanceof Error ? err.message : "查询失败",
+      chainContext,
+    );
   }
-
-  return response;
 }
+
+export { QueryChainError } from "./queryChainError.js";

@@ -1,13 +1,17 @@
 import { describe, expect, it, vi, beforeAll } from "vitest";
 import { closeDb } from "../src/db/client.js";
 
-vi.mock("@langchain/openai", () => ({
-  ChatOpenAI: vi.fn().mockImplementation(() => ({
-    invoke: vi.fn().mockResolvedValue({
-      content: "```sql\nSELECT name AS 产线 FROM production_line LIMIT 5\n```",
-    }),
-  })),
-}));
+vi.mock("@langchain/openai", () => {
+  return {
+    ChatOpenAI: class MockChatOpenAI {
+      /** @param _opts - LangChain 构造参数 */
+      constructor(_opts: unknown) {}
+      invoke = vi.fn().mockResolvedValue({
+        content: "```sql\nSELECT name AS 产线 FROM production_line LIMIT 5\n```",
+      });
+    },
+  };
+});
 
 vi.mock("../src/chains/modelRouter.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/chains/modelRouter.js")>();

@@ -15,7 +15,7 @@ pnpm test              # 运行单元测试
 ## 技术栈
 
 - **后端**：Express + LangChain.js + node:sqlite（Node 22 内置）
-- **前端**：Vue3 + Element Plus + Tailwind CSS + ECharts
+- **前端**：Vue3 + Element Plus + Tailwind CSS v4 + ECharts
 - **模型**：本地 Qwen3.5-27B (vLLM) / 远端 qwen-max
 
 详细设计见 [wensh-plan.md](./wensh-plan.md)。

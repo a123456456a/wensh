@@ -20,6 +20,7 @@ const SAMPLE_QUESTIONS = [
 
 const input = ref("");
 const loading = ref(false);
+const interpretEnabled = ref(true);
 const messages = ref<ChatMessage[]>([]);
 const health = ref<HealthResponse | null>(null);
 
@@ -66,7 +67,7 @@ async function handleSubmit(): Promise<void> {
   try {
     const response = await postQuery({
       question,
-      interpret: true,
+      interpret: interpretEnabled.value,
       history: buildHistory(),
     });
     msg.response = response;
@@ -177,16 +178,24 @@ onMounted(() => {
 
     <footer class="bg-white border-t px-6 py-4">
       <div class="max-w-5xl mx-auto space-y-3">
-        <div class="flex flex-wrap gap-2">
-          <el-button
-            v-for="q in SAMPLE_QUESTIONS"
-            :key="q"
+        <div class="flex items-center justify-between gap-4">
+          <div class="flex flex-wrap gap-2">
+            <el-button
+              v-for="q in SAMPLE_QUESTIONS"
+              :key="q"
+              size="small"
+              round
+              @click="fillSample(q)"
+            >
+              {{ q }}
+            </el-button>
+          </div>
+          <el-switch
+            v-model="interpretEnabled"
+            active-text="AI解读"
+            inactive-text="仅数据"
             size="small"
-            round
-            @click="fillSample(q)"
-          >
-            {{ q }}
-          </el-button>
+          />
         </div>
         <ChatInput v-model="input" :loading="loading" @submit="handleSubmit" />
       </div>
