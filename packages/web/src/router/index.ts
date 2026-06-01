@@ -36,19 +36,34 @@ async function isAuthRequired(): Promise<boolean> {
 }
 
 router.beforeEach(async (to, _from, next) => {
+  const required = await isAuthRequired();
+
+  if (to.name === "login") {
+    if (!required) {
+      next({ name: "home" });
+      return;
+    }
+    const me = await fetchMe();
+    if (me?.user) {
+      next({ name: "home" });
+      return;
+    }
+    next();
+    return;
+  }
+
   if (to.meta.public) {
     next();
     return;
   }
 
-  const required = await isAuthRequired();
   if (!required) {
     next();
     return;
   }
 
   const me = await fetchMe();
-  if (!me) {
+  if (!me?.user) {
     next({ name: "login", query: { redirect: to.fullPath } });
     return;
   }

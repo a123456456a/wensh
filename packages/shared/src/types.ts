@@ -8,7 +8,13 @@ export type ModelType = "local" | "remote";
 export type RemoteProvider = "qwen" | "deepseek" | "openai" | "custom";
 
 /** 本地不可达时的降级原因 */
-export type FallbackReason = "local_unavailable";
+export type FallbackReason = "local_unavailable" | "no_model_available";
+
+/** 问数响应模式：query=SQL查数，chat=无模型时的对话回复 */
+export type QueryResponseMode = "query" | "chat";
+
+/** 模型路由决策来源 */
+export type RouteSource = "rule" | "llm" | "rule_fallback";
 
 /** 图表类型提示 */
 export type ChartHint = "bar" | "line" | "table";
@@ -95,6 +101,12 @@ export interface QuerySuccessResponse {
   model_used: ModelType;
   model_name: string;
   fallback_reason: FallbackReason | null;
+  /** 路由决策来源（hybrid 模式下可见） */
+  route_source: RouteSource | null;
+  /** LLM 路由理由（route_source=llm 时有值） */
+  route_reason?: string | null;
+  /** 响应模式，默认 query */
+  response_mode?: QueryResponseMode;
   row_count: number;
   elapsed_ms: number;
   timing: QueryTiming;

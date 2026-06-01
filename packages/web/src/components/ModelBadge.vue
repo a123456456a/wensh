@@ -1,10 +1,17 @@
 <script setup lang="ts">
-import type { ModelType, FallbackReason, TokenUsage } from "@wensh/shared";
+import type {
+  FallbackReason,
+  ModelType,
+  RouteSource,
+  TokenUsage,
+} from "@wensh/shared";
 
 defineProps<{
   modelUsed: ModelType;
   modelName: string;
   fallbackReason?: FallbackReason | null;
+  routeSource?: RouteSource | null;
+  routeReason?: string | null;
   tokenUsage?: TokenUsage;
 }>();
 
@@ -14,6 +21,23 @@ defineProps<{
  */
 function formatTokens(value: number): string {
   return value.toLocaleString();
+}
+
+/**
+ * 路由来源中文标签
+ * @param source - 路由决策来源
+ */
+function routeSourceLabel(source: RouteSource): string {
+  switch (source) {
+    case "rule":
+      return "规则路由";
+    case "llm":
+      return "LLM 路由";
+    case "rule_fallback":
+      return "规则兜底";
+    default:
+      return source;
+  }
 }
 </script>
 
@@ -26,8 +50,20 @@ function formatTokens(value: number): string {
       {{ modelUsed === "local" ? "本地" : "云端" }}
     </span>
     <span class="model-badge__name">{{ modelName }}</span>
+    <span
+      v-if="routeSource"
+      class="model-badge__route"
+      :class="`model-badge__route--${routeSource}`"
+      :title="routeReason ?? undefined"
+    >
+      {{ routeSourceLabel(routeSource) }}
+      <template v-if="routeReason"> · {{ routeReason }}</template>
+    </span>
     <span v-if="fallbackReason === 'local_unavailable'" class="model-badge__fallback">
-      本地不可用，已降级
+      本地不可用，已切换云端
+    </span>
+    <span v-if="fallbackReason === 'no_model_available'" class="model-badge__fallback">
+      暂无可用模型
     </span>
     <span v-if="tokenUsage && tokenUsage.total_tokens > 0" class="model-badge__tokens">
       {{ formatTokens(tokenUsage.total_tokens) }} tokens
@@ -66,6 +102,24 @@ function formatTokens(value: number): string {
 .model-badge__name {
   font-size: 13px;
   color: var(--text-secondary);
+}
+
+.model-badge__route {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
+}
+
+.model-badge__route--llm {
+  color: var(--accent-remote);
+  background: color-mix(in srgb, var(--accent-remote) 8%, transparent);
+}
+
+.model-badge__route--rule_fallback {
+  color: var(--accent-warning);
+  background: color-mix(in srgb, var(--accent-warning) 10%, transparent);
 }
 
 .model-badge__fallback {

@@ -32,7 +32,12 @@ vi.mock("../src/chains/modelRouter.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/chains/modelRouter.js")>();
   return {
     ...actual,
-    routeModelWithMeta: vi.fn().mockResolvedValue({ type: "remote" as const }),
+    routeModelForQuery: vi.fn().mockResolvedValue({ type: "remote" as const }),
+    resolveQueryModel: vi.fn().mockResolvedValue({
+      type: "remote" as const,
+      modelName: "qwen-max",
+      remoteProvider: "qwen" as const,
+    }),
     isProviderConfigured: vi.fn().mockReturnValue(true),
   };
 });

@@ -23,12 +23,12 @@ describe("remoteProvider", () => {
     delete process.env.CUSTOM_MODEL_NAME;
   });
 
-  it("defaults to qwen provider", () => {
-    expect(getRemoteProvider()).toBe("qwen");
+  it("defaults to deepseek provider", () => {
+    expect(getRemoteProvider()).toBe("deepseek");
     const config = resolveRemoteModelConfig();
-    expect(config.provider).toBe("qwen");
-    expect(config.baseURL).toContain("dashscope.aliyuncs.com");
-    expect(config.modelName).toBe("qwen-max");
+    expect(config.provider).toBe("deepseek");
+    expect(config.baseURL).toBe("https://api.deepseek.com");
+    expect(config.modelName).toBe("deepseek-v4-pro");
   });
 
   it("resolves deepseek provider config", () => {
@@ -73,16 +73,16 @@ describe("remoteProvider", () => {
     expect(config.baseURL).toBe("https://gateway.example.com/v1");
   });
 
-  it("falls back to qwen for unknown provider", () => {
+  it("falls back to deepseek for unknown provider", () => {
     process.env.REMOTE_PROVIDER = "unknown-vendor";
-    expect(getRemoteProvider()).toBe("qwen");
+    expect(getRemoteProvider()).toBe("deepseek");
   });
 
   it("isRemoteConfigured rejects placeholder and missing keys", () => {
-    process.env.QWEN_API_KEY = "sk-xxxxxxxxxxxxxxxx";
+    process.env.DEEPSEEK_API_KEY = "sk-xxxxxxxxxxxxxxxx";
     expect(isRemoteConfigured()).toBe(false);
 
-    process.env.QWEN_API_KEY = "sk-real-key";
+    process.env.DEEPSEEK_API_KEY = "sk-real-key";
     expect(isRemoteConfigured()).toBe(true);
   });
 

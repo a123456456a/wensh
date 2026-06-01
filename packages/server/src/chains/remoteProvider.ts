@@ -54,14 +54,14 @@ export interface RemoteModelConfig {
 }
 
 /**
- * 读取 .env 默认远端提供商（非法值回退为 qwen）
+ * 读取 .env 默认远端提供商（非法值回退为 deepseek）
  */
 export function getRemoteProvider(): RemoteProvider {
-  const raw = (process.env.REMOTE_PROVIDER ?? "qwen").trim().toLowerCase();
+  const raw = (process.env.REMOTE_PROVIDER ?? "deepseek").trim().toLowerCase();
   if (raw in REMOTE_PROVIDER_PRESETS) {
     return raw as RemoteProvider;
   }
-  return "qwen";
+  return "deepseek";
 }
 
 /**

@@ -31,7 +31,7 @@ pnpm test              # 运行单元测试
 
 ## 认证（P4）
 
-- **`AUTH_ENABLED=false`**（默认）：开发模式，无需登录即可问数
-- **`AUTH_ENABLED=true`**：需先登录；默认演示账号 `demo` / `demo123`
+- **`AUTH_ENABLED=true`**（默认）：需先登录；演示账号 `demo` / `demo123`
+- **`AUTH_ENABLED=false`**：开发免登录，可直接问数
 - 调 mes/mro 域 API 时，BFF 自动附带 `X-Wensh-*` HMAC 签名（需与域 API 共享 `WENSH_DOMAIN_SIGNING_SECRET`）
 - 后期企业 SSO：设置 `AUTH_PROVIDER=oidc`（见 `.env.example` 注释项）

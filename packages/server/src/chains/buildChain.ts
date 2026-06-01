@@ -8,6 +8,7 @@ import type {
   QuerySuccessResponse,
   QueryTiming,
   QueryTokenUsage,
+  RouteResult,
   StreamEvent,
 } from "@wensh/shared";
 import { HumanMessage } from "@langchain/core/messages";
@@ -27,10 +28,9 @@ import {
 import {
   getModel,
   getModelName,
-  isProviderConfigured,
-  routeModelWithMeta,
+  resolveQueryModel,
+  routeModelForQuery,
 } from "./modelRouter.js";
-import { getRemoteProvider } from "./remoteProvider.js";
 import { QueryChainError } from "./queryChainError.js";
 
 /** SSE 事件发送器 */
@@ -388,6 +388,164 @@ function inferChartHint(
 }
 
 /**
+ * 判断是否为无需查数的闲聊/问候类消息
+ * @param question - 用户输入
+ */
+export function isChatOnlyQuestion(question: string): boolean {
+  const trimmed = question.trim();
+  return /^(你好|您好|hello|hi|hey|帮助|怎么用|如何使用)[!.?，。~\s]*$/i.test(
+    trimmed,
+  );
+}
+
+/**
+ * 构建闲聊模式 Prompt
+ * @param question - 用户消息
+ * @param domainLabel - 业务域展示名
+ */
+function buildChatPrompt(question: string, domainLabel: string): string {
+  return `你是「问数」助手，帮助用户用自然语言查询${domainLabel}业务数据。
+
+用户消息：${question}
+
+请友好、简洁地回复。若用户在打招呼或询问用法，介绍你能做什么并给出 1～2 个示例问题。
+不要生成 SQL，不要编造查询结果。`;
+}
+
+/**
+ * 流式输出 LLM 闲聊回复并完成 SSE
+ */
+async function streamChatResponse(
+  request: QueryRequest,
+  model: ReturnType<typeof getModel>,
+  modelUsed: ModelType,
+  modelName: string,
+  domainLabel: string,
+  emit: StreamEmitter,
+  totalStart: number,
+  routeMs: number,
+): Promise<void> {
+  emit({ type: "phase", phase: "routing", message: "正在回复..." });
+
+  const prompt = buildChatPrompt(request.question, domainLabel);
+  let content = "";
+  const tokenUsage = createEmptyQueryTokenUsage();
+  const interpretStart = Date.now();
+
+  const stream = await model.stream([new HumanMessage(prompt)]);
+  for await (const chunk of stream) {
+    const delta = chunkToText(chunk.content);
+    if (delta) {
+      content += delta;
+      emit({ type: "interpret_delta", delta });
+    }
+    if (chunk.usage_metadata) {
+      accumulateQueryTokens(tokenUsage, modelUsed, extractTokenUsage(chunk));
+    }
+  }
+
+  emit({
+    type: "tokens",
+    model_used: modelUsed,
+    usage: tokenUsage[modelUsed === "local" ? "local" : "remote"],
+  });
+
+  const response: QuerySuccessResponse = {
+    sql: "",
+    columns: [],
+    rows: [],
+    model_used: modelUsed,
+    model_name: modelName,
+    fallback_reason: null,
+    route_source: null,
+    route_reason: null,
+    response_mode: "chat",
+    row_count: 0,
+    elapsed_ms: Date.now() - totalStart,
+    timing: {
+      route_ms: routeMs,
+      sql_gen_ms: 0,
+      exec_ms: 0,
+      interpret_ms: Date.now() - interpretStart,
+    },
+    token_usage: tokenUsage,
+    interpretation: content.trim(),
+  };
+
+  emit({ type: "done", result: response });
+}
+
+/**
+ * 无可用模型时的对话式回复文案
+ * @param question - 用户问题
+ */
+export function buildNoModelChatMessage(question: string): string {
+  const trimmed = question.trim();
+  const isGreeting =
+    /^(你好|您好|hello|hi|hey|帮助|怎么用|如何使用)/i.test(trimmed);
+
+  if (isGreeting) {
+    return [
+      "您好！我是问数助手，可以用自然语言查询 MES / MRO 等业务数据。",
+      "",
+      "当前没有检测到可用的 AI 模型，我暂时无法为您生成 SQL 查数，但您可以继续在这里对话。",
+      "",
+      "请让管理员检查：",
+      "• 本地 vLLM 是否已启动（LOCAL_BASE_URL）",
+      "• 或至少配置一个云端 API Key（如 QWEN_API_KEY、DEEPSEEK_API_KEY）",
+      "",
+      "模型就绪后，直接再次提问即可查数。",
+    ].join("\n");
+  }
+
+  return [
+    "我理解您想查数，但当前没有可用的 AI 模型，暂时无法生成 SQL。",
+    "",
+    "您可以继续提问或稍后再试；配置好模型后我会正常为您查数。",
+    "",
+    "请检查：",
+    "• 本地模型：vLLM 服务与 LOCAL_BASE_URL",
+    "• 云端模型：.env 中的 QWEN_API_KEY / DEEPSEEK_API_KEY 等",
+  ].join("\n");
+}
+
+/**
+ * 无可用模型时以 chat 模式完成 SSE（不抛错，保持会话可继续）
+ */
+function emitChatFallbackResponse(
+  request: QueryRequest,
+  emit: StreamEmitter,
+  route: RouteResult,
+  totalStart: number,
+): void {
+  emit({ type: "phase", phase: "routing", message: "正在回复..." });
+
+  const response: QuerySuccessResponse = {
+    sql: "",
+    columns: [],
+    rows: [],
+    model_used: "local",
+    model_name: "无可用模型",
+    fallback_reason: "no_model_available",
+    route_source: route.routeSource ?? null,
+    route_reason: route.routeReason ?? null,
+    response_mode: "chat",
+    row_count: 0,
+    elapsed_ms: Date.now() - totalStart,
+    timing: {
+      route_ms: Date.now() - totalStart,
+      sql_gen_ms: 0,
+      exec_ms: 0,
+      interpret_ms: 0,
+    },
+    token_usage: createEmptyQueryTokenUsage(),
+    interpretation: buildNoModelChatMessage(request.question),
+  };
+
+  emit({ type: "done", result: response });
+}
+
+/**
  * 执行查询链主入口（非流式，内部复用流式管道）
  * @param request - 查询请求
  */
@@ -430,35 +588,56 @@ export async function runQueryChainStream(
   const tokenUsage = createEmptyQueryTokenUsage();
 
   try {
-    emit({ type: "phase", phase: "routing", message: "正在路由模型..." });
-
-    const routeStart = Date.now();
     const adapter = getDomainAdapter(request.domain);
     const schemaBundle = await adapter.getSchema({
       question: request.question,
       authUser,
     });
-    const route = await routeModelWithMeta(request.question, schemaBundle.tablesMeta);
     const remoteProvider = request.remote_provider;
 
-    if (route.type === "remote") {
-      const effectiveProvider = remoteProvider ?? getRemoteProvider();
-      if (!isProviderConfigured(effectiveProvider)) {
-        throw new QueryChainError(
-          `远端提供商 ${effectiveProvider} 未配置，请在 .env 中填写对应 API Key`,
-          {
-            model_used: "remote",
-            model_name: getModelName("remote", effectiveProvider),
-          },
-        );
+    if (isChatOnlyQuestion(request.question)) {
+      const routeStart = Date.now();
+      const resolved = await resolveQueryModel(
+        { type: "remote", routeSource: "rule" },
+        remoteProvider,
+      );
+      const routeMs = Date.now() - routeStart;
+
+      if (!resolved) {
+        emitChatFallbackResponse(request, emit, { type: "remote" }, totalStart);
+        return;
       }
+
+      const model = getModel(resolved.type, resolved.remoteProvider);
+      await streamChatResponse(
+        request,
+        model,
+        resolved.type,
+        resolved.modelName,
+        adapter.label,
+        emit,
+        totalStart,
+        routeMs,
+      );
+      return;
     }
 
-    const model = getModel(route.type, remoteProvider);
-    const modelName = getModelName(route.type, remoteProvider);
+    emit({ type: "phase", phase: "routing", message: "正在路由模型..." });
+
+    const routeStart = Date.now();
+    const route = await routeModelForQuery(request.question, schemaBundle.tablesMeta);
+    const resolved = await resolveQueryModel(route, remoteProvider);
+
+    if (!resolved) {
+      emitChatFallbackResponse(request, emit, route, totalStart);
+      return;
+    }
+
+    const model = getModel(resolved.type, resolved.remoteProvider);
+    const modelName = resolved.modelName;
     const routeMs = Date.now() - routeStart;
     const chainContext = {
-      model_used: route.type,
+      model_used: resolved.type,
       model_name: modelName,
       authUser,
     };
@@ -467,7 +646,7 @@ export async function runQueryChainStream(
       adapter,
       schemaBundle,
       model,
-      route.type,
+      resolved.type,
       request.question,
       history,
       chainContext,
@@ -486,9 +665,12 @@ export async function runQueryChainStream(
       sql,
       columns,
       rows,
-      model_used: route.type,
+      model_used: resolved.type,
       model_name: modelName,
-      fallback_reason: route.fallbackReason ?? null,
+      fallback_reason: resolved.fallbackReason ?? null,
+      route_source: resolved.routeSource ?? null,
+      route_reason: resolved.routeReason ?? null,
+      response_mode: "query",
       row_count: rows.length,
       elapsed_ms: Date.now() - totalStart,
       timing,
@@ -501,13 +683,13 @@ export async function runQueryChainStream(
       const interpretStart = Date.now();
       const { interpretation, chartHint, tokens } = await streamInterpretation(
         model,
-        route.type,
+        resolved.type,
         request.question,
         rows,
         emit,
       );
 
-      accumulateQueryTokens(tokenUsage, route.type, tokens);
+      accumulateQueryTokens(tokenUsage, resolved.type, tokens);
       response.interpretation = interpretation;
       response.chart_hint = chartHint;
       timing.interpret_ms = Date.now() - interpretStart;

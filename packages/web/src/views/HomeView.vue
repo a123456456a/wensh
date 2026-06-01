@@ -25,6 +25,7 @@ import ErrorAlert from "../components/ErrorAlert.vue";
 import TokenStats from "../components/TokenStats.vue";
 import StatusPill from "../components/StatusPill.vue";
 import StreamProgress from "../components/StreamProgress.vue";
+import StreamingText from "../components/StreamingText.vue";
 import {
   loadSavedRemoteProvider,
   saveRemoteProvider,
@@ -39,7 +40,7 @@ const loading = ref(false);
 const interpretEnabled = ref(true);
 const messages = ref<ChatMessage[]>([]);
 const health = ref<HealthResponse | null>(null);
-const selectedRemoteProvider = ref<RemoteProvider>("qwen");
+const selectedRemoteProvider = ref<RemoteProvider>("deepseek");
 const sessionTokens = ref<QueryTokenUsage>(emptyQueryTokenUsage());
 const samplePopoverVisible = ref(false);
 
@@ -124,6 +125,13 @@ function initRemoteProviderSelection(data: HealthResponse): void {
 }
 
 /**
+ * 跳转登录页
+ */
+function goLogin(): void {
+  void router.push({ name: "login", query: { redirect: "/" } });
+}
+
+/**
  * 退出登录
  */
 async function handleLogout(): Promise<void> {
@@ -162,6 +170,25 @@ function handleRemoteProviderChange(provider: RemoteProvider): void {
 }
 
 /**
+ * 判断是否为闲聊模式消息（含流式进行中）
+ * @param msg - 会话消息
+ */
+function isChatMessage(msg: ChatMessage): boolean {
+  if (msg.response?.response_mode === "chat") {
+    return true;
+  }
+  return Boolean(msg.loading && msg.streamInterpretation && !msg.streamSql);
+}
+
+/**
+ * 获取消息展示用全文（优先已完成响应）
+ * @param msg - 会话消息
+ */
+function messageDisplayText(msg: ChatMessage): string {
+  return msg.response?.interpretation ?? msg.streamInterpretation ?? "";
+}
+
+/**
  * 流式发送查询
  */
 async function handleSubmit(): Promise<void> {
@@ -177,8 +204,18 @@ async function handleSubmit(): Promise<void> {
     streamInterpretation: "",
   };
   messages.value.push(msg);
+  const msgIndex = messages.value.length - 1;
   input.value = "";
   loading.value = true;
+
+  /**
+   * 通过 reactive 数组索引更新，确保流式增量触发视图刷新
+   */
+  const patchMessage = (patch: Partial<ChatMessage>): void => {
+    const current = messages.value[msgIndex];
+    if (!current) return;
+    messages.value[msgIndex] = { ...current, ...patch };
+  };
 
   try {
     await postQueryStream(
@@ -190,49 +227,65 @@ async function handleSubmit(): Promise<void> {
         remote_provider: selectedRemoteProvider.value,
       },
       (event) => {
+        const current = messages.value[msgIndex];
+        if (!current) return;
+
         switch (event.type) {
           case "phase":
-            msg.streamPhase = event.message;
+            patchMessage({ streamPhase: event.message });
             break;
           case "sql_delta":
-            msg.streamSql = (msg.streamSql ?? "") + event.delta;
+            patchMessage({
+              streamSql: (current.streamSql ?? "") + event.delta,
+            });
             break;
           case "sql":
-            msg.streamSql = event.sql;
+            patchMessage({ streamSql: event.sql });
             break;
           case "data":
-            msg.streamColumns = event.columns;
-            msg.streamRows = event.rows;
+            patchMessage({
+              streamColumns: event.columns,
+              streamRows: event.rows,
+            });
             break;
           case "interpret_delta":
-            msg.streamInterpretation =
-              (msg.streamInterpretation ?? "") + event.delta;
+            patchMessage({
+              streamInterpretation:
+                (current.streamInterpretation ?? "") + event.delta,
+            });
             break;
           case "done":
-            msg.response = event.result;
-            msg.loading = false;
-            msg.streamPhase = undefined;
+            patchMessage({
+              response: event.result,
+              loading: false,
+              streamPhase: undefined,
+            });
             accumulateSessionTokens(event.result.token_usage);
             break;
           case "error":
-            msg.error = event.error;
-            msg.loading = false;
-            msg.streamPhase = undefined;
+            patchMessage({
+              error: event.error,
+              loading: false,
+              streamPhase: undefined,
+            });
             break;
         }
       },
     );
 
-    if (msg.loading) {
-      msg.loading = false;
-      if (!msg.response && !msg.error) {
-        msg.error = { error: "流式连接意外中断" };
+    const finalMsg = messages.value[msgIndex];
+    if (finalMsg?.loading) {
+      patchMessage({ loading: false });
+      if (!finalMsg.response && !finalMsg.error) {
+        patchMessage({ error: { error: "流式连接意外中断" } });
       }
     }
   } catch {
-    msg.error = { error: "网络请求失败" };
-    msg.loading = false;
-    msg.streamPhase = undefined;
+    patchMessage({
+      error: { error: "网络请求失败" },
+      loading: false,
+      streamPhase: undefined,
+    });
   } finally {
     loading.value = false;
   }
@@ -326,7 +379,15 @@ onMounted(() => {
           />
           <span v-if="currentUser" class="header__user">{{ currentUser.username }}</span>
           <button
-            v-if="health.auth?.enabled"
+            v-else-if="health.auth?.enabled"
+            type="button"
+            class="btn-ghost"
+            @click="goLogin"
+          >
+            登录
+          </button>
+          <button
+            v-if="health.auth?.enabled && currentUser"
             type="button"
             class="btn-ghost"
             @click="handleLogout"
@@ -370,7 +431,7 @@ onMounted(() => {
 
         <div class="message__assistant">
           <StreamProgress
-            v-if="msg.loading && msg.streamPhase"
+            v-if="msg.loading && msg.streamPhase && !msg.streamInterpretation && !msg.streamSql"
             :message="msg.streamPhase"
           />
 
@@ -378,11 +439,22 @@ onMounted(() => {
             <ErrorAlert :error="msg.error.error" :sql="msg.error.sql" />
           </div>
 
-          <div v-if="msg.response" class="message__card">
+          <div v-if="isChatMessage(msg)" class="message__card message__card--chat">
+            <div class="chat-reply">
+              <StreamingText
+                :text="messageDisplayText(msg)"
+                :active="!!msg.loading"
+              />
+            </div>
+          </div>
+
+          <div v-else-if="msg.response" class="message__card">
             <ModelBadge
               :model-used="msg.response.model_used"
               :model-name="msg.response.model_name"
               :fallback-reason="msg.response.fallback_reason"
+              :route-source="msg.response.route_source"
+              :route-reason="msg.response.route_reason"
               :token-usage="messageTotalTokens(msg.response.token_usage)"
             />
             <SqlViewer :sql="msg.response.sql" />
@@ -399,7 +471,10 @@ onMounted(() => {
               v-if="msg.response.interpretation || msg.streamInterpretation"
               class="interpretation"
             >
-              {{ msg.response.interpretation || msg.streamInterpretation }}
+              <StreamingText
+                :text="messageDisplayText(msg)"
+                :active="!!msg.loading"
+              />
             </div>
             <div class="message__meta">
               <span>{{ msg.response.row_count }} 行</span>
@@ -431,14 +506,11 @@ onMounted(() => {
               :columns="msg.streamColumns"
               :rows="msg.streamRows"
             />
-          </div>
-
-          <div
-            v-else-if="msg.loading && msg.streamInterpretation"
-            class="message__card message__card--streaming"
-          >
-            <div class="interpretation">
-              {{ msg.streamInterpretation }}<span class="cursor">|</span>
+            <div v-if="msg.streamInterpretation" class="interpretation">
+              <StreamingText
+                :text="msg.streamInterpretation"
+                :active="!!msg.loading"
+              />
             </div>
           </div>
         </div>
@@ -678,6 +750,21 @@ onMounted(() => {
   line-height: 1.7;
   color: var(--text-secondary);
   border-left: 3px solid var(--accent-primary);
+}
+
+.message__card--chat {
+  padding: 4px 0;
+}
+
+.chat-reply {
+  padding: 14px 18px;
+  background: var(--surface-muted);
+  border-radius: var(--radius);
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--text-secondary);
+  white-space: pre-line;
+  border-left: 3px solid var(--accent-warning);
 }
 
 .stream-preview {
