@@ -41,6 +41,7 @@ export async function postQueryStream(
   const response = await fetch("/api/query/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify(body),
   });
 

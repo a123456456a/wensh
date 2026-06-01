@@ -1,6 +1,16 @@
 export type {
+  AuthUser,
+  LoginRequest,
+  LoginResponse,
+  LogoutResponse,
+  MeResponse,
+} from "./authTypes.js";
+
+export type {
+  BusinessDomain,
   ChartHint,
   ChatMessage,
+  DomainHealthItem,
   FallbackReason,
   HealthResponse,
   HistoryItem,

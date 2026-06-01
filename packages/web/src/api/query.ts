@@ -6,7 +6,7 @@ import type {
   QuerySuccessResponse,
 } from "@wensh/shared";
 
-const client = axios.create({ baseURL: "/api" });
+const client = axios.create({ baseURL: "/api", withCredentials: true });
 
 /**
  * 提交自然语言查询

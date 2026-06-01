@@ -32,7 +32,7 @@ vi.mock("../src/chains/modelRouter.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/chains/modelRouter.js")>();
   return {
     ...actual,
-    routeModel: vi.fn().mockResolvedValue({ type: "remote" as const }),
+    routeModelWithMeta: vi.fn().mockResolvedValue({ type: "remote" as const }),
     isProviderConfigured: vi.fn().mockReturnValue(true),
   };
 });
@@ -50,6 +50,7 @@ describe("chain smoke", () => {
     const { runQueryChain } = await import("../src/chains/buildChain.js");
     const result = await runQueryChain({
       question: "列出所有产线",
+      domain: "demo",
       interpret: false,
     });
 

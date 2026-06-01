@@ -1,5 +1,5 @@
 import { Router, type Response } from "express";
-import type { QueryErrorResponse, RemoteProvider, StreamEvent } from "@wensh/shared";
+import type { BusinessDomain, QueryErrorResponse, RemoteProvider, StreamEvent } from "@wensh/shared";
 import { z } from "zod";
 import { runQueryChain, runQueryChainStream, QueryChainError } from "../chains/buildChain.js";
 
@@ -10,6 +10,8 @@ const remoteProviderSchema = z.enum([
   "custom",
 ]) satisfies z.ZodType<RemoteProvider>;
 
+const businessDomainSchema = z.enum(["demo", "mes", "mro"]) satisfies z.ZodType<BusinessDomain>;
+
 const historyItemSchema = z.object({
   question: z.string().min(1).max(500),
   sql: z.string().min(1),
@@ -17,15 +19,18 @@ const historyItemSchema = z.object({
 
 const queryBodySchema = z.object({
   question: z.string().min(1).max(500),
+  domain: businessDomainSchema,
   interpret: z.boolean().optional(),
   history: z.array(historyItemSchema).max(2).optional(),
   remote_provider: remoteProviderSchema.optional(),
 });
 
+import { requireAuth } from "../middleware/requireAuth.js";
+
 /** POST /api/query 路由 */
 export const queryRouter = Router();
 
-queryRouter.post("/", async (req, res, next) => {
+queryRouter.post("/", requireAuth, async (req, res, next) => {
   const parsed = queryBodySchema.safeParse(req.body);
   if (!parsed.success) {
     const message = parsed.error.issues[0]?.message ?? "请求参数无效";
@@ -34,7 +39,7 @@ queryRouter.post("/", async (req, res, next) => {
   }
 
   try {
-    const result = await runQueryChain(parsed.data);
+    const result = await runQueryChain(parsed.data, req.user);
     res.json(result);
   } catch (err) {
     next(err);
@@ -51,7 +56,7 @@ function writeSseEvent(res: Response, event: StreamEvent): void {
 }
 
 /** POST /api/query/stream SSE 流式查询 */
-queryRouter.post("/stream", async (req, res) => {
+queryRouter.post("/stream", requireAuth, async (req, res) => {
   const parsed = queryBodySchema.safeParse(req.body);
   if (!parsed.success) {
     const message = parsed.error.issues[0]?.message ?? "请求参数无效";
@@ -66,7 +71,7 @@ queryRouter.post("/stream", async (req, res) => {
 
   await runQueryChainStream(parsed.data, (event) => {
     writeSseEvent(res, event);
-  });
+  }, req.user);
 
   res.end();
 });

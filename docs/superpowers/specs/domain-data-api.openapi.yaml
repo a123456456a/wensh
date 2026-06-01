@@ -1,0 +1,313 @@
+openapi: 3.0.3
+info:
+  title: WenShu Domain Data API
+  description: |
+    问数平台（wensh）对接各业务域（MES、MRO 等）的统一 Data API 契约。
+
+    **实现方：** 各业务系统团队自行开发，部署在独立环境，连接本域 MySQL 只读库。
+
+    **调用方：** wensh 问数平台 BFF 通过 `HttpDomainAdapter` 调用。
+
+    **认证（两层）：**
+    1. **服务层** — `Authorization: Bearer {SERVICE_TOKEN}`（问数 BFF 持有，不下发浏览器）
+    2. **用户层** — `X-Wensh-*` Header + HMAC 签名（V1 自建账号）；后期可改为 `X-Wensh-User-Token` 转发 OIDC JWT（V2 SSO）
+
+    域 API 必须同时校验服务 Token 与用户上下文，并按 `X-Wensh-Data-Scope` 过滤数据。
+  version: 1.0.1
+
+servers:
+  - url: https://{domain}-api.example.com
+    variables:
+      domain:
+        default: mes
+        enum: [mes, mro]
+
+security:
+  - BearerAuth: []
+
+paths:
+  /api/v1/health:
+    get:
+      summary: 健康检查
+      operationId: getHealth
+      tags: [Meta]
+      responses:
+        "200":
+          description: 服务与数据库可用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "401":
+          description: 服务 Token 无效
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: 数据库不可用
+
+  /api/v1/schema:
+    get:
+      summary: 获取 Schema 与指标口径（供 LLM Prompt 注入）
+      operationId: getSchema
+      tags: [Schema]
+      parameters:
+        - $ref: "#/components/parameters/XWenshUserId"
+        - $ref: "#/components/parameters/XWenshUserRoles"
+        - $ref: "#/components/parameters/XWenshDataScope"
+        - $ref: "#/components/parameters/XWenshTimestamp"
+        - $ref: "#/components/parameters/XWenshUserSignature"
+        - name: question
+          in: query
+          required: false
+          schema:
+            type: string
+          description: 用户问题；提供时建议返回相关表子集（须按用户权限过滤）
+        - name: tables
+          in: query
+          required: false
+          schema:
+            type: string
+          description: 逗号分隔表名，精确指定
+      responses:
+        "200":
+          description: Schema bundle（仅包含用户有权访问的表）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SchemaResponse"
+        "401":
+          description: 服务 Token 或用户签名无效
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: 用户无权访问请求的表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/query/execute:
+    post:
+      summary: 执行只读 SQL 查询
+      operationId: executeQuery
+      tags: [Query]
+      parameters:
+        - $ref: "#/components/parameters/XWenshUserId"
+        - $ref: "#/components/parameters/XWenshUserRoles"
+        - $ref: "#/components/parameters/XWenshDataScope"
+        - $ref: "#/components/parameters/XWenshTimestamp"
+        - $ref: "#/components/parameters/XWenshUserSignature"
+        - $ref: "#/components/parameters/XWenshUserToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecuteQueryRequest"
+      responses:
+        "200":
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecuteQueryResponse"
+        "400":
+          description: SQL 校验失败或参数错误
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: 服务 Token 或用户签名无效
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: 用户无权执行该查询或访问相关数据
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "504":
+          description: 查询超时
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: 问数 BFF 服务 Token（建议 MES/MRO 各用独立 Token）
+
+  parameters:
+    XWenshUserId:
+      name: X-Wensh-User-Id
+      in: header
+      required: true
+      schema:
+        type: string
+      description: 问数平台用户 ID（V1 自建账号 internal id）
+    XWenshUserRoles:
+      name: X-Wensh-User-Roles
+      in: header
+      required: true
+      schema:
+        type: string
+      description: 逗号分隔角色，如 mes_viewer,mro_viewer
+    XWenshDataScope:
+      name: X-Wensh-Data-Scope
+      in: header
+      required: true
+      schema:
+        type: string
+      description: |
+        JSON 字符串，数据范围。示例：`{"factory_ids":["F01","F02"],"workshop_ids":["W01"]}`
+    XWenshTimestamp:
+      name: X-Wensh-Timestamp
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Unix 秒时间戳；域 API 拒绝超出 ±300 秒的请求（防重放）
+    XWenshUserSignature:
+      name: X-Wensh-User-Signature
+      in: header
+      required: true
+      schema:
+        type: string
+      description: |
+        HMAC-SHA256 十六进制签名。payload 拼接（无分隔符）：
+        `{user_id}{roles}{data_scope_json}{timestamp}`，密钥为 `WENSH_DOMAIN_SIGNING_SECRET`（问数 BFF 与域 API 共享）
+    XWenshUserToken:
+      name: X-Wensh-User-Token
+      in: header
+      required: false
+      schema:
+        type: string
+      description: V2 企业 SSO 可选；OIDC access_token，域 API 用 IAM 公钥验签后解析权限（与 Signature 二选一）
+
+  schemas:
+    HealthResponse:
+      type: object
+      required: [domain, label, database]
+      properties:
+        domain:
+          type: string
+          example: mes
+        label:
+          type: string
+          example: 制造执行
+        database:
+          type: object
+          required: [available, dialect]
+          properties:
+            available:
+              type: boolean
+            dialect:
+              type: string
+              enum: [mysql]
+            version:
+              type: string
+              example: "8.0.36"
+
+    TableMeta:
+      type: object
+      required: [name, label, tier, keywords]
+      properties:
+        name:
+          type: string
+          example: work_order
+        label:
+          type: string
+          example: 生产工单
+        tier:
+          type: string
+          enum: [small, large]
+          description: large 表触发问数平台走远端 LLM
+        keywords:
+          type: array
+          items:
+            type: string
+          example: [工单, 在制, 订单]
+
+    SchemaResponse:
+      type: object
+      required: [dialect, prompt_schema, metrics_prompt, tables_meta]
+      properties:
+        dialect:
+          type: string
+          enum: [mysql]
+        prompt_schema:
+          type: string
+          description: 可直接拼入 LLM Prompt 的 DDL 文本（仅含用户有权表）
+        metrics_prompt:
+          type: string
+          description: 该域业务指标口径说明
+        tables_meta:
+          type: array
+          items:
+            $ref: "#/components/schemas/TableMeta"
+
+    ExecuteQueryRequest:
+      type: object
+      required: [sql]
+      properties:
+        sql:
+          type: string
+          description: 仅允许单条 SELECT；域 API 须按 data_scope 改写或校验
+        timeout_ms:
+          type: integer
+          default: 30000
+        max_rows:
+          type: integer
+          default: 1000
+        source_question:
+          type: string
+          description: 用户原始问题（审计用）
+        trace_id:
+          type: string
+          description: 全链路追踪 ID
+
+    ExecuteQueryResponse:
+      type: object
+      required: [columns, rows, row_count, exec_ms]
+      properties:
+        columns:
+          type: array
+          items:
+            type: string
+        rows:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        row_count:
+          type: integer
+        exec_ms:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      required: [error, code]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum:
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - SQL_VALIDATION_ERROR
+            - SQL_EXEC_ERROR
+            - TIMEOUT
+            - DB_UNAVAILABLE
+        trace_id:
+          type: string

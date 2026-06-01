@@ -1,5 +1,6 @@
 import type { AIMessage } from "@langchain/core/messages";
 import type {
+  AuthUser,
   ChartHint,
   HistoryItem,
   ModelType,
@@ -10,8 +11,8 @@ import type {
   StreamEvent,
 } from "@wensh/shared";
 import { HumanMessage } from "@langchain/core/messages";
-import { getDb } from "../db/client.js";
-import { getMetricsPrompt, getSchemaPrompt } from "../db/schema.js";
+import { getDomainAdapter } from "../adapters/registry.js";
+import type { DomainDataAdapter, SchemaBundle } from "../adapters/types.js";
 import {
   extractChartHint,
   extractSql,
@@ -27,7 +28,7 @@ import {
   getModel,
   getModelName,
   isProviderConfigured,
-  routeModel,
+  routeModelWithMeta,
 } from "./modelRouter.js";
 import { getRemoteProvider } from "./remoteProvider.js";
 import { QueryChainError } from "./queryChainError.js";
@@ -72,28 +73,34 @@ function buildHistoryContext(history?: HistoryItem[]): string {
 
 /**
  * 构建 SQL 生成 Prompt
+ * @param question - 用户问题
+ * @param schema - 域 Schema bundle
+ * @param domainLabel - 业务域展示名
+ * @param history - 多轮历史
+ * @param errorFeedback - 上次失败信息
  */
 function buildSqlPrompt(
   question: string,
+  schema: SchemaBundle,
+  domainLabel: string,
   history?: HistoryItem[],
   errorFeedback?: string,
 ): string {
-  const schema = getSchemaPrompt();
-  const metrics = getMetricsPrompt();
+  const dialectLabel = schema.dialect === "mysql" ? "MySQL" : "SQLite";
   const historyContext = buildHistoryContext(history);
 
-  let prompt = `你是一个专业的数据库查询助手，帮助用户查询制造执行系统（MES）数据库。
+  let prompt = `你是一个专业的数据库查询助手，帮助用户查询${domainLabel}业务数据库。
 
 数据库表结构如下：
-${schema}
+${schema.promptSchema}
 
 业务指标口径：
-${metrics}
+${schema.metricsPrompt}
 
 ${historyContext}
 用户问题：${question}
 
-请生成一条标准 SQLite 查询语句，要求：
+请生成一条标准 ${dialectLabel} 查询语句，要求：
 1. 只生成 SELECT，不生成任何修改性 SQL
 2. 用 \`\`\`sql ... \`\`\` 包裹 SQL
 3. 列名使用中文别名（如 yield_rate AS 良率）
@@ -124,34 +131,19 @@ function buildInterpretPrompt(
 }
 
 /**
- * 执行 SQL 并返回列名与行数据
- */
-function executeSql(sql: string): {
-  columns: string[];
-  rows: Record<string, unknown>[];
-} {
-  const db = getDb();
-  const stmt = db.prepare(sql);
-  const rows = stmt.all() as Record<string, unknown>[];
-  const columns =
-    rows.length > 0
-      ? Object.keys(rows[0])
-      : stmt.columns().map((c) => c.name);
-  return { columns, rows };
-}
-
-/**
  * 调用 LLM 生成并校验 SQL（失败抛出 QueryChainError）
  */
 async function invokeSqlGeneration(
   model: ReturnType<typeof getModel>,
   question: string,
+  schema: SchemaBundle,
+  domainLabel: string,
   history?: HistoryItem[],
   errorFeedback?: string,
   emit?: StreamEmitter,
   modelUsed?: ModelType,
 ): Promise<{ sql: string; tokens: ReturnType<typeof extractTokenUsage> }> {
-  const prompt = buildSqlPrompt(question, history, errorFeedback);
+  const prompt = buildSqlPrompt(question, schema, domainLabel, history, errorFeedback);
 
   if (emit && modelUsed) {
     return streamLlmCall(model, prompt, emit, modelUsed, "sql_delta");
@@ -270,11 +262,17 @@ async function streamInterpretation(
  * 生成 SQL 并执行（提取失败或执行失败均可重试 1 次）
  */
 async function generateAndExecuteSql(
+  adapter: DomainDataAdapter,
+  schema: SchemaBundle,
   model: ReturnType<typeof getModel>,
   modelUsed: ModelType,
   question: string,
   history?: HistoryItem[],
-  chainContext?: { model_used: QuerySuccessResponse["model_used"]; model_name: string },
+  chainContext?: {
+    model_used: QuerySuccessResponse["model_used"];
+    model_name: string;
+    authUser?: AuthUser;
+  },
   emit?: StreamEmitter,
   tokenBucket?: QueryTokenUsage,
 ): Promise<{ sql: string; columns: string[]; rows: Record<string, unknown>[]; sqlGenMs: number; execMs: number }> {
@@ -295,6 +293,8 @@ async function generateAndExecuteSql(
       const { sql, tokens } = await invokeSqlGeneration(
         model,
         question,
+        schema,
+        adapter.label,
         history,
         attempt > 0 ? lastError : undefined,
         emit,
@@ -312,20 +312,25 @@ async function generateAndExecuteSql(
       }
 
       const execStart = Date.now();
-      const result = executeSql(sql);
+      const result = await adapter.executeQuery({
+        sql,
+        sourceQuestion: question,
+        authUser: chainContext?.authUser,
+      });
 
       if (emit) {
         emit({
           type: "data",
           columns: result.columns,
           rows: result.rows,
-          row_count: result.rows.length,
+          row_count: result.rowCount,
         });
       }
 
       return {
         sql,
-        ...result,
+        columns: result.columns,
+        rows: result.rows,
         sqlGenMs: Date.now() - genStart,
         execMs: Date.now() - execStart,
       };
@@ -388,6 +393,7 @@ function inferChartHint(
  */
 export async function runQueryChain(
   request: QueryRequest,
+  authUser?: AuthUser,
 ): Promise<QuerySuccessResponse> {
   return new Promise((resolve, reject) => {
     void runQueryChainStream(request, (event) => {
@@ -403,7 +409,7 @@ export async function runQueryChain(
           }),
         );
       }
-    });
+    }, authUser);
   });
 }
 
@@ -411,10 +417,12 @@ export async function runQueryChain(
  * 流式执行查询链，通过 emit 推送 SSE 事件
  * @param request - 查询请求
  * @param emit - 事件发送器
+ * @param authUser - 已登录用户（透传域 API）
  */
 export async function runQueryChainStream(
   request: QueryRequest,
   emit: StreamEmitter,
+  authUser?: AuthUser,
 ): Promise<void> {
   const totalStart = Date.now();
   const interpret = request.interpret !== false;
@@ -425,7 +433,12 @@ export async function runQueryChainStream(
     emit({ type: "phase", phase: "routing", message: "正在路由模型..." });
 
     const routeStart = Date.now();
-    const route = await routeModel(request.question);
+    const adapter = getDomainAdapter(request.domain);
+    const schemaBundle = await adapter.getSchema({
+      question: request.question,
+      authUser,
+    });
+    const route = await routeModelWithMeta(request.question, schemaBundle.tablesMeta);
     const remoteProvider = request.remote_provider;
 
     if (route.type === "remote") {
@@ -444,9 +457,15 @@ export async function runQueryChainStream(
     const model = getModel(route.type, remoteProvider);
     const modelName = getModelName(route.type, remoteProvider);
     const routeMs = Date.now() - routeStart;
-    const chainContext = { model_used: route.type, model_name: modelName };
+    const chainContext = {
+      model_used: route.type,
+      model_name: modelName,
+      authUser,
+    };
 
     const { sql, columns, rows, sqlGenMs, execMs } = await generateAndExecuteSql(
+      adapter,
+      schemaBundle,
       model,
       route.type,
       request.question,

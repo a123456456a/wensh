@@ -2,6 +2,8 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   extractTableNames,
   getPreferredModelType,
+  getPreferredModelTypeFromTables,
+  matchTablesFromQuestion,
   routeModel,
   isLocalModelAvailable,
 } from "../src/chains/modelRouter.js";
@@ -57,5 +59,37 @@ describe("modelRouter", () => {
   it("isLocalModelAvailable returns false without base URL", async () => {
     delete process.env.LOCAL_BASE_URL;
     await expect(isLocalModelAvailable()).resolves.toBe(false);
+  });
+
+  it("matchTablesFromQuestion uses keywords from tablesMeta", () => {
+    const meta = [
+      {
+        name: "work_order",
+        label: "工单",
+        tier: "large" as const,
+        keywords: ["工单", "在制"],
+      },
+      {
+        name: "production_line",
+        label: "产线",
+        tier: "small" as const,
+        keywords: ["产线"],
+      },
+    ];
+    const matched = matchTablesFromQuestion("在制工单有多少", meta);
+    expect(matched.map((t) => t.name)).toContain("work_order");
+  });
+
+  it("getPreferredModelTypeFromTables routes large tier to remote", () => {
+    expect(
+      getPreferredModelTypeFromTables([
+        { name: "t1", label: "T1", tier: "small", keywords: [] },
+      ]),
+    ).toBe("local");
+    expect(
+      getPreferredModelTypeFromTables([
+        { name: "t2", label: "T2", tier: "large", keywords: [] },
+      ]),
+    ).toBe("remote");
   });
 });

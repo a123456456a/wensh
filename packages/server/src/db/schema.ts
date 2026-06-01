@@ -1,3 +1,4 @@
+import type { TableMeta } from "../adapters/types.js";
 import { getDb } from "./client.js";
 
 /** MES 数据库表名列表 */
@@ -42,6 +43,39 @@ export function getRowCount(table: MesTable): number {
     .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
     .get() as { count: number };
   return row.count;
+}
+
+/**
+ * Demo 表元数据（供路由）
+ * @returns 四张 Demo 表的 tier 与关键词配置
+ */
+export function getDemoTablesMeta(): TableMeta[] {
+  return [
+    {
+      name: "production_line",
+      label: "产线",
+      tier: "small",
+      keywords: ["产线", "车间", "产能"],
+    },
+    {
+      name: "work_order",
+      label: "工单",
+      tier: "large",
+      keywords: ["工单", "订单", "在制"],
+    },
+    {
+      name: "quality_record",
+      label: "质量记录",
+      tier: "large",
+      keywords: ["良率", "质量", "不良", "抽检"],
+    },
+    {
+      name: "shift_log",
+      label: "班次日志",
+      tier: "large",
+      keywords: ["班次", "oee", "停机"],
+    },
+  ];
 }
 
 /**

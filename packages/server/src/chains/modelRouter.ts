@@ -1,5 +1,6 @@
 import type { FallbackReason, ModelType, RemoteProvider } from "@wensh/shared";
 import { ChatOpenAI } from "@langchain/openai";
+import type { TableMeta } from "../adapters/types.js";
 import {
   ALL_TABLES,
   getRowCount,
@@ -47,6 +48,54 @@ export function getPreferredModelType(question: string): ModelType {
   const threshold = Number(process.env.ROW_THRESHOLD ?? "10000");
   const maxCount = Math.max(...tables.map((t) => getRowCount(t)));
   return maxCount > threshold ? "remote" : "local";
+}
+
+/**
+ * 从 tablesMeta 匹配问题涉及的表
+ * @param question - 用户问题
+ * @param tablesMeta - 域表元数据
+ */
+export function matchTablesFromQuestion(
+  question: string,
+  tablesMeta: TableMeta[],
+): TableMeta[] {
+  const lower = question.toLowerCase();
+  const matched = tablesMeta.filter((t) =>
+    t.keywords.some((kw) => lower.includes(kw.toLowerCase())),
+  );
+  return matched.length > 0 ? matched : tablesMeta;
+}
+
+/**
+ * 根据表 tier 决定首选模型（任一 large 表 → remote）
+ * @param tables - 匹配到的表元数据
+ */
+export function getPreferredModelTypeFromTables(tables: TableMeta[]): ModelType {
+  const hasLarge = tables.some((t) => t.tier === "large");
+  return hasLarge ? "remote" : "local";
+}
+
+/**
+ * 基于 tablesMeta 路由模型：tier + 本地不可达降级
+ * @param question - 用户问题
+ * @param tablesMeta - 域表元数据
+ */
+export async function routeModelWithMeta(
+  question: string,
+  tablesMeta: TableMeta[],
+): Promise<RouteResult> {
+  const matched = matchTablesFromQuestion(question, tablesMeta);
+  const preferred = getPreferredModelTypeFromTables(matched);
+
+  if (preferred === "local") {
+    const available = await isLocalModelAvailable();
+    if (!available) {
+      return { type: "remote", fallbackReason: "local_unavailable" };
+    }
+    return { type: "local" };
+  }
+
+  return { type: "remote" };
 }
 
 /**

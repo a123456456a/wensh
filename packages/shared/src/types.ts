@@ -1,3 +1,6 @@
+/** 业务域标识 */
+export type BusinessDomain = "demo" | "mes" | "mro";
+
 /** 模型路由类型 */
 export type ModelType = "local" | "remote";
 
@@ -19,6 +22,8 @@ export interface HistoryItem {
 /** POST /api/query 请求体 */
 export interface QueryRequest {
   question: string;
+  /** 业务域（demo=本地 SQLite，mes/mro=域 Data API） */
+  domain: BusinessDomain;
   interpret?: boolean;
   history?: HistoryItem[];
   /** 远端 LLM 提供商（不传则使用 .env 默认 REMOTE_PROVIDER） */
@@ -125,6 +130,14 @@ export interface ChatMessage {
   streamRows?: Record<string, unknown>[];
 }
 
+/** 业务域健康状态 */
+export interface DomainHealthItem {
+  domain: BusinessDomain;
+  label: string;
+  api_available: boolean;
+  api_base_url: string;
+}
+
 /** GET /api/health 响应 */
 export interface HealthResponse {
   local_model: {
@@ -144,5 +157,11 @@ export interface HealthResponse {
   database: {
     available: boolean;
     path: string;
+  };
+  /** 各业务域 Data API 连通状态 */
+  domains: DomainHealthItem[];
+  /** 认证配置 */
+  auth: {
+    enabled: boolean;
   };
 }
