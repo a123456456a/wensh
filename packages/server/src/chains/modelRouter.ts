@@ -1,10 +1,14 @@
-import type { FallbackReason, ModelType } from "@wensh/shared";
+import type { FallbackReason, ModelType, RemoteProvider } from "@wensh/shared";
 import { ChatOpenAI } from "@langchain/openai";
 import {
   ALL_TABLES,
   getRowCount,
   type MesTable,
 } from "../db/schema.js";
+import {
+  isRemoteConfigured,
+  resolveRemoteModelConfig,
+} from "./remoteProvider.js";
 
 /** 关键词 → 表名映射 */
 const KEYWORD_TABLE_MAP: Array<{ keywords: string[]; table: MesTable }> = [
@@ -93,8 +97,9 @@ export async function routeModel(question: string): Promise<RouteResult> {
 /**
  * 创建 ChatOpenAI 实例
  * @param type - local 或 remote
+ * @param remoteProvider - 远端提供商覆盖（仅 type=remote 时生效）
  */
-export function getModel(type: ModelType): ChatOpenAI {
+export function getModel(type: ModelType, remoteProvider?: RemoteProvider): ChatOpenAI {
   const timeout = Number(process.env.LLM_TIMEOUT_MS ?? "60000");
 
   if (type === "local") {
@@ -111,11 +116,12 @@ export function getModel(type: ModelType): ChatOpenAI {
     });
   }
 
+  const remote = resolveRemoteModelConfig(remoteProvider);
   return new ChatOpenAI({
-    model: process.env.QWEN_MODEL_NAME ?? "qwen-max",
-    apiKey: process.env.QWEN_API_KEY ?? "",
+    model: remote.modelName,
+    apiKey: remote.apiKey,
     configuration: {
-      baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      baseURL: remote.baseURL,
     },
     timeout,
   });
@@ -123,18 +129,19 @@ export function getModel(type: ModelType): ChatOpenAI {
 
 /**
  * 获取当前路由对应的模型名称
+ * @param type - local 或 remote
+ * @param remoteProvider - 远端提供商覆盖（仅 type=remote 时生效）
  */
-export function getModelName(type: ModelType): string {
+export function getModelName(type: ModelType, remoteProvider?: RemoteProvider): string {
   if (type === "local") {
     return process.env.LOCAL_MODEL_NAME ?? "Qwen3.5-27B";
   }
-  return process.env.QWEN_MODEL_NAME ?? "qwen-max";
+  return resolveRemoteModelConfig(remoteProvider).modelName;
 }
 
-/**
- * 探测远端 API 是否已配置
- */
-export function isRemoteConfigured(): boolean {
-  const key = process.env.QWEN_API_KEY ?? "";
-  return key.length > 0 && key !== "sk-xxxxxxxxxxxxxxxx";
-}
+export {
+  isProviderConfigured,
+  isRemoteConfigured,
+  listRemoteProviderOptions,
+  resolveRemoteModelConfig,
+} from "./remoteProvider.js";

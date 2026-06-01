@@ -16,9 +16,25 @@ const highlighted = computed(() => {
 </script>
 
 <template>
-  <el-collapse class="mt-2">
+  <el-collapse class="sql-viewer">
     <el-collapse-item title="查看 SQL" name="sql">
-      <pre class="rounded bg-gray-900 p-3 text-sm text-green-300 overflow-x-auto"><code v-html="highlighted" /></pre>
+      <pre class="sql-viewer__code"><code v-html="highlighted" /></pre>
     </el-collapse-item>
   </el-collapse>
 </template>
+
+<style scoped>
+.sql-viewer {
+  margin-top: 4px;
+}
+
+.sql-viewer__code {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  background: #0f172a;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-x: auto;
+}
+</style>

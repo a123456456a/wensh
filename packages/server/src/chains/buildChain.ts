@@ -1,9 +1,13 @@
+import type { AIMessage } from "@langchain/core/messages";
 import type {
   ChartHint,
   HistoryItem,
+  ModelType,
   QueryRequest,
   QuerySuccessResponse,
   QueryTiming,
+  QueryTokenUsage,
+  StreamEvent,
 } from "@wensh/shared";
 import { HumanMessage } from "@langchain/core/messages";
 import { getDb } from "../db/client.js";
@@ -15,11 +19,38 @@ import {
 } from "../utils/sqlExtract.js";
 import { assertSqlSafe } from "../utils/sqlSafety.js";
 import {
+  accumulateQueryTokens,
+  createEmptyQueryTokenUsage,
+  extractTokenUsage,
+} from "../utils/tokenUsage.js";
+import {
   getModel,
   getModelName,
+  isProviderConfigured,
   routeModel,
 } from "./modelRouter.js";
+import { getRemoteProvider } from "./remoteProvider.js";
 import { QueryChainError } from "./queryChainError.js";
+
+/** SSE 事件发送器 */
+export type StreamEmitter = (event: StreamEvent) => void;
+
+/**
+ * 从流式 chunk 提取文本增量
+ */
+function chunkToText(content: AIMessage["content"]): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part) =>
+        typeof part === "string" ? part : "text" in part ? String(part.text) : "",
+      )
+      .join("");
+  }
+  return "";
+}
 
 /**
  * 构建 history 上下文 Prompt 片段
@@ -117,13 +148,21 @@ async function invokeSqlGeneration(
   question: string,
   history?: HistoryItem[],
   errorFeedback?: string,
-): Promise<string> {
+  emit?: StreamEmitter,
+  modelUsed?: ModelType,
+): Promise<{ sql: string; tokens: ReturnType<typeof extractTokenUsage> }> {
   const prompt = buildSqlPrompt(question, history, errorFeedback);
+
+  if (emit && modelUsed) {
+    return streamLlmCall(model, prompt, emit, modelUsed, "sql_delta");
+  }
+
   const response = await model.invoke([new HumanMessage(prompt)]);
   const content =
     typeof response.content === "string"
       ? response.content
       : JSON.stringify(response.content);
+  const tokens = extractTokenUsage(response);
 
   const sql = extractSql(content);
   if (!sql) {
@@ -137,7 +176,94 @@ async function invokeSqlGeneration(
     throw new QueryChainError(msg, { sql });
   }
 
-  return sql;
+  return { sql, tokens };
+}
+
+/**
+ * 流式调用 LLM，完成后解析 SQL
+ */
+async function streamLlmCall(
+  model: ReturnType<typeof getModel>,
+  prompt: string,
+  emit: StreamEmitter,
+  modelUsed: ModelType,
+  deltaType: "sql_delta" | "interpret_delta",
+): Promise<{ sql: string; tokens: ReturnType<typeof extractTokenUsage> }> {
+  let content = "";
+  let tokens = createEmptyQueryTokenUsage().local;
+
+  const stream = await model.stream([new HumanMessage(prompt)]);
+  for await (const chunk of stream) {
+    const delta = chunkToText(chunk.content);
+    if (delta) {
+      content += delta;
+      emit({ type: deltaType, delta });
+    }
+    if (chunk.usage_metadata) {
+      tokens = extractTokenUsage(chunk);
+    }
+  }
+
+  emit({ type: "tokens", model_used: modelUsed, usage: tokens });
+
+  const sql = extractSql(content);
+  if (!sql) {
+    throw new QueryChainError("未能从模型输出中提取 SQL");
+  }
+
+  try {
+    assertSqlSafe(sql);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new QueryChainError(msg, { sql });
+  }
+
+  emit({ type: "sql", sql });
+  return { sql, tokens };
+}
+
+/**
+ * 流式解读结果
+ */
+async function streamInterpretation(
+  model: ReturnType<typeof getModel>,
+  modelUsed: ModelType,
+  question: string,
+  rows: Record<string, unknown>[],
+  emit: StreamEmitter,
+): Promise<{
+  interpretation: string;
+  chartHint: ChartHint;
+  tokens: ReturnType<typeof extractTokenUsage>;
+}> {
+  const prompt = buildInterpretPrompt(question, rows);
+  let content = "";
+  let tokens = createEmptyQueryTokenUsage().local;
+
+  const stream = await model.stream([new HumanMessage(prompt)]);
+  for await (const chunk of stream) {
+    const delta = chunkToText(chunk.content);
+    if (delta) {
+      content += delta;
+      emit({ type: "interpret_delta", delta });
+    }
+    if (chunk.usage_metadata) {
+      tokens = extractTokenUsage(chunk);
+    }
+  }
+
+  emit({ type: "tokens", model_used: modelUsed, usage: tokens });
+
+  const chartHint = extractChartHint(content) ?? inferChartHint(
+    rows.length > 0 ? Object.keys(rows[0]) : [],
+    rows,
+  );
+
+  return {
+    interpretation: stripChartTag(content),
+    chartHint,
+    tokens,
+  };
 }
 
 /**
@@ -145,9 +271,12 @@ async function invokeSqlGeneration(
  */
 async function generateAndExecuteSql(
   model: ReturnType<typeof getModel>,
+  modelUsed: ModelType,
   question: string,
   history?: HistoryItem[],
   chainContext?: { model_used: QuerySuccessResponse["model_used"]; model_name: string },
+  emit?: StreamEmitter,
+  tokenBucket?: QueryTokenUsage,
 ): Promise<{ sql: string; columns: string[]; rows: Record<string, unknown>[]; sqlGenMs: number; execMs: number }> {
   const genStart = Date.now();
   let lastSql: string | undefined;
@@ -155,15 +284,45 @@ async function generateAndExecuteSql(
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const sql = await invokeSqlGeneration(
+      if (emit) {
+        emit({
+          type: "phase",
+          phase: "sql_generating",
+          message: attempt > 0 ? "SQL 修正中..." : "正在生成 SQL...",
+        });
+      }
+
+      const { sql, tokens } = await invokeSqlGeneration(
         model,
         question,
         history,
         attempt > 0 ? lastError : undefined,
+        emit,
+        modelUsed,
       );
+
+      if (tokenBucket) {
+        accumulateQueryTokens(tokenBucket, modelUsed, tokens);
+      }
+
       lastSql = sql;
+
+      if (emit) {
+        emit({ type: "phase", phase: "executing", message: "正在执行查询..." });
+      }
+
       const execStart = Date.now();
       const result = executeSql(sql);
+
+      if (emit) {
+        emit({
+          type: "data",
+          columns: result.columns,
+          rows: result.rows,
+          row_count: result.rows.length,
+        });
+      }
+
       return {
         sql,
         ...result,
@@ -224,30 +383,77 @@ function inferChartHint(
 }
 
 /**
- * 执行查询链主入口
+ * 执行查询链主入口（非流式，内部复用流式管道）
  * @param request - 查询请求
  */
 export async function runQueryChain(
   request: QueryRequest,
 ): Promise<QuerySuccessResponse> {
+  return new Promise((resolve, reject) => {
+    void runQueryChainStream(request, (event) => {
+      if (event.type === "done") {
+        resolve(event.result);
+      }
+      if (event.type === "error") {
+        reject(
+          new QueryChainError(event.error.error, {
+            sql: event.error.sql,
+            model_used: event.error.model_used,
+            model_name: event.error.model_name,
+          }),
+        );
+      }
+    });
+  });
+}
+
+/**
+ * 流式执行查询链，通过 emit 推送 SSE 事件
+ * @param request - 查询请求
+ * @param emit - 事件发送器
+ */
+export async function runQueryChainStream(
+  request: QueryRequest,
+  emit: StreamEmitter,
+): Promise<void> {
   const totalStart = Date.now();
   const interpret = request.interpret !== false;
   const history = request.history?.slice(-2);
-
-  const routeStart = Date.now();
-  const route = await routeModel(request.question);
-  const model = getModel(route.type);
-  const modelName = getModelName(route.type);
-  const routeMs = Date.now() - routeStart;
-
-  const chainContext = { model_used: route.type, model_name: modelName };
+  const tokenUsage = createEmptyQueryTokenUsage();
 
   try {
+    emit({ type: "phase", phase: "routing", message: "正在路由模型..." });
+
+    const routeStart = Date.now();
+    const route = await routeModel(request.question);
+    const remoteProvider = request.remote_provider;
+
+    if (route.type === "remote") {
+      const effectiveProvider = remoteProvider ?? getRemoteProvider();
+      if (!isProviderConfigured(effectiveProvider)) {
+        throw new QueryChainError(
+          `远端提供商 ${effectiveProvider} 未配置，请在 .env 中填写对应 API Key`,
+          {
+            model_used: "remote",
+            model_name: getModelName("remote", effectiveProvider),
+          },
+        );
+      }
+    }
+
+    const model = getModel(route.type, remoteProvider);
+    const modelName = getModelName(route.type, remoteProvider);
+    const routeMs = Date.now() - routeStart;
+    const chainContext = { model_used: route.type, model_name: modelName };
+
     const { sql, columns, rows, sqlGenMs, execMs } = await generateAndExecuteSql(
       model,
+      route.type,
       request.question,
       history,
       chainContext,
+      emit,
+      tokenUsage,
     );
 
     const timing: QueryTiming = {
@@ -267,36 +473,49 @@ export async function runQueryChain(
       row_count: rows.length,
       elapsed_ms: Date.now() - totalStart,
       timing,
+      token_usage: tokenUsage,
     };
 
     if (interpret && rows.length > 0) {
-      const interpretStart = Date.now();
-      const interpretPrompt = buildInterpretPrompt(request.question, rows);
-      const interpretResponse = await model.invoke([
-        new HumanMessage(interpretPrompt),
-      ]);
-      const interpretText =
-        typeof interpretResponse.content === "string"
-          ? interpretResponse.content
-          : JSON.stringify(interpretResponse.content);
+      emit({ type: "phase", phase: "interpreting", message: "正在解读结果..." });
 
-      const chartHint =
-        extractChartHint(interpretText) ?? inferChartHint(columns, rows);
-      response.interpretation = stripChartTag(interpretText);
+      const interpretStart = Date.now();
+      const { interpretation, chartHint, tokens } = await streamInterpretation(
+        model,
+        route.type,
+        request.question,
+        rows,
+        emit,
+      );
+
+      accumulateQueryTokens(tokenUsage, route.type, tokens);
+      response.interpretation = interpretation;
       response.chart_hint = chartHint;
       timing.interpret_ms = Date.now() - interpretStart;
       response.elapsed_ms = Date.now() - totalStart;
+      response.token_usage = tokenUsage;
     }
 
-    return response;
+    emit({ type: "done", result: response });
   } catch (err) {
     if (err instanceof QueryChainError) {
-      throw err;
+      emit({
+        type: "error",
+        error: {
+          error: err.message,
+          sql: err.context.sql,
+          model_used: err.context.model_used,
+          model_name: err.context.model_name,
+        },
+      });
+      return;
     }
-    throw new QueryChainError(
-      err instanceof Error ? err.message : "查询失败",
-      chainContext,
-    );
+    emit({
+      type: "error",
+      error: {
+        error: err instanceof Error ? err.message : "查询失败",
+      },
+    });
   }
 }
 

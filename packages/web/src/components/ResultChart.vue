@@ -96,6 +96,17 @@ onUnmounted(() => {
   <div
     v-if="effectiveHint"
     ref="chartRef"
-    class="mt-3 h-72 w-full rounded border border-gray-200 bg-white"
+    class="result-chart"
   />
 </template>
+
+<style scoped>
+.result-chart {
+  margin-top: 16px;
+  height: 280px;
+  width: 100%;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+</style>

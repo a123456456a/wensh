@@ -1,6 +1,9 @@
 /** 模型路由类型 */
 export type ModelType = "local" | "remote";
 
+/** 远端 LLM 提供商（OpenAI 兼容 API） */
+export type RemoteProvider = "qwen" | "deepseek" | "openai" | "custom";
+
 /** 本地不可达时的降级原因 */
 export type FallbackReason = "local_unavailable";
 
@@ -18,6 +21,16 @@ export interface QueryRequest {
   question: string;
   interpret?: boolean;
   history?: HistoryItem[];
+  /** 远端 LLM 提供商（不传则使用 .env 默认 REMOTE_PROVIDER） */
+  remote_provider?: RemoteProvider;
+}
+
+/** health 接口返回的远端提供商选项 */
+export interface RemoteProviderOption {
+  provider: RemoteProvider;
+  label: string;
+  model_name: string;
+  available: boolean;
 }
 
 /** 分阶段耗时（毫秒） */
@@ -27,6 +40,47 @@ export interface QueryTiming {
   exec_ms: number;
   interpret_ms: number;
 }
+
+/** 单次 LLM 调用的 Token 用量 */
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+}
+
+/** 查询链 Token 汇总（按本地/远端分别统计） */
+export interface QueryTokenUsage {
+  local: TokenUsage;
+  remote: TokenUsage;
+}
+
+/** 创建空的 Token 用量对象 */
+export function emptyTokenUsage(): TokenUsage {
+  return { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+}
+
+/** 创建空的查询 Token 汇总 */
+export function emptyQueryTokenUsage(): QueryTokenUsage {
+  return { local: emptyTokenUsage(), remote: emptyTokenUsage() };
+}
+
+/** 流式阶段标识 */
+export type StreamPhase =
+  | "routing"
+  | "sql_generating"
+  | "executing"
+  | "interpreting";
+
+/** SSE 流式事件 */
+export type StreamEvent =
+  | { type: "phase"; phase: StreamPhase; message: string }
+  | { type: "sql_delta"; delta: string }
+  | { type: "sql"; sql: string }
+  | { type: "data"; columns: string[]; rows: Record<string, unknown>[]; row_count: number }
+  | { type: "interpret_delta"; delta: string }
+  | { type: "tokens"; model_used: ModelType; usage: TokenUsage }
+  | { type: "done"; result: QuerySuccessResponse }
+  | { type: "error"; error: QueryErrorResponse };
 
 /** POST /api/query 成功响应 */
 export interface QuerySuccessResponse {
@@ -39,6 +93,7 @@ export interface QuerySuccessResponse {
   row_count: number;
   elapsed_ms: number;
   timing: QueryTiming;
+  token_usage: QueryTokenUsage;
   interpretation?: string;
   chart_hint?: ChartHint;
 }
@@ -58,6 +113,16 @@ export interface ChatMessage {
   response?: QuerySuccessResponse;
   error?: QueryErrorResponse;
   loading?: boolean;
+  /** 流式阶段文案 */
+  streamPhase?: string;
+  /** 流式 SQL 生成片段 */
+  streamSql?: string;
+  /** 流式解读片段 */
+  streamInterpretation?: string;
+  /** 流式阶段已返回的列名 */
+  streamColumns?: string[];
+  /** 流式阶段已返回的行数据 */
+  streamRows?: Record<string, unknown>[];
 }
 
 /** GET /api/health 响应 */
@@ -68,7 +133,13 @@ export interface HealthResponse {
   };
   remote_model: {
     available: boolean;
+    provider: RemoteProvider;
+    provider_label: string;
     model_name: string;
+    /** .env 中的默认远端提供商 */
+    default_provider: RemoteProvider;
+    /** 所有内置提供商及其配置状态 */
+    providers: RemoteProviderOption[];
   };
   database: {
     available: boolean;

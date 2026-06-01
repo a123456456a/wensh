@@ -6,7 +6,7 @@ defineProps<{
 </script>
 
 <template>
-  <el-table :data="rows" stripe border class="mt-3 w-full" max-height="360">
+  <el-table :data="rows" stripe class="result-table" max-height="360">
     <el-table-column
       v-for="col in columns"
       :key="col"
@@ -16,3 +16,10 @@ defineProps<{
     />
   </el-table>
 </template>
+
+<style scoped>
+.result-table {
+  margin-top: 16px;
+  width: 100%;
+}
+</style>

@@ -9,4 +9,12 @@ export type {
   QueryRequest,
   QuerySuccessResponse,
   QueryTiming,
+  QueryTokenUsage,
+  RemoteProvider,
+  RemoteProviderOption,
+  StreamEvent,
+  StreamPhase,
+  TokenUsage,
 } from "./types.js";
+
+export { emptyQueryTokenUsage, emptyTokenUsage } from "./types.js";
