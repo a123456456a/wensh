@@ -6,3 +6,7 @@ dist/
 .DS_Store
 *.log
 packages/server/data/*.db
+packages/web/dist/
+packages/web/tsconfig.tsbuildinfo
+packages/web/src/**/*.js
+!packages/web/src/**/*.config.js

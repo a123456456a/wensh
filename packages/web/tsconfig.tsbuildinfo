@@ -1,1 +1,0 @@
-{"root":["./src/main.ts","./src/vite-env.d.ts","./src/api/query.ts","./src/app.vue","./src/components/chatinput.vue","./src/components/erroralert.vue","./src/components/modelbadge.vue","./src/components/resultchart.vue","./src/components/resulttable.vue","./src/components/sqlviewer.vue"],"version":"5.9.3"}
