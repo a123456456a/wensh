@@ -11,7 +11,6 @@ drawings:
   persist: false
 transition: slide-left
 mdc: true
-css: ./styles/index.css
 ---
 
 # 问数 · WenShu
