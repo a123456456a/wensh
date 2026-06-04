@@ -1,0 +1,15 @@
+{
+  "name": "@wensh/slides",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "slidev --open --port 3030",
+    "build": "slidev build",
+    "export": "slidev export",
+    "export-pdf": "slidev export --format pdf"
+  },
+  "devDependencies": {
+    "@slidev/cli": "^52.0.0",
+    "@slidev/theme-seriph": "^0.25.0"
+  }
+}

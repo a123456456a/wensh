@@ -5,7 +5,11 @@
     "dev": "concurrently -n server,web -c blue,green \"pnpm --filter @wensh/server dev\" \"pnpm --filter @wensh/web dev\"",
     "seed": "pnpm --filter @wensh/server seed",
     "test": "pnpm --filter @wensh/server test",
-    "build": "pnpm --filter @wensh/shared build && pnpm --filter @wensh/server build && pnpm --filter @wensh/web build"
+    "build": "pnpm --filter @wensh/shared build && pnpm --filter @wensh/server build && pnpm --filter @wensh/web build",
+    "slides:dev": "pnpm --filter @wensh/slides dev",
+    "slides:build": "pnpm --filter @wensh/slides build",
+    "export": "pnpm --filter @wensh/slides export",
+    "slides:export-pdf": "pnpm --filter @wensh/slides export-pdf"
   },
   "devDependencies": {
     "concurrently": "^10.0.1"
