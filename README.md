@@ -20,6 +20,16 @@ pnpm test              # 运行单元测试
 
 详细设计见 [wensh-plan.md](./wensh-plan.md)。
 
+## 公司演示文稿（Slidev）
+
+面向内部汇报的 PPT 见 [packages/slides](./packages/slides/)：
+
+```bash
+pnpm slides:dev        # 本地预览（http://localhost:3030）
+pnpm slides:build      # 构建静态站点
+pnpm slides:export-pdf # 导出 PDF
+```
+
 ## 多业务域 API 对接
 
 问数支持三个业务域：`demo`（本地 SQLite 演示）、`mes`（制造执行）、`mro`（设备维护）。`mes` / `mro` 通过 HTTP 对接各域 Data API，前端可在页头切换域并查看连通状态。
