@@ -233,7 +233,7 @@ export async function getRouterModel(): Promise<ChatOpenAI> {
         process.env.ROUTER_LOCAL_MODEL_NAME ??
         process.env.LOCAL_MODEL_NAME ??
         "Qwen3.5-27B",
-      apiKey: "local",
+      apiKey: "",
       configuration: {
         baseURL: process.env.LOCAL_BASE_URL,
       },

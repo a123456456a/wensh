@@ -100,6 +100,10 @@ export interface QuerySuccessResponse {
   rows: Record<string, unknown>[];
   model_used: ModelType;
   model_name: string;
+  /** 解读阶段使用的模型类型（split 模式下与 model_used 不同） */
+  interpret_model_used?: ModelType;
+  /** 解读阶段模型名称 */
+  interpret_model_name?: string;
   fallback_reason: FallbackReason | null;
   /** 路由决策来源（hybrid 模式下可见） */
   route_source: RouteSource | null;

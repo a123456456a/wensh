@@ -46,6 +46,11 @@ export async function postQueryStream(
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      const redirect = encodeURIComponent(window.location.pathname + window.location.search);
+      window.location.href = `/login?redirect=${redirect}`;
+      return;
+    }
     let error: QueryErrorResponse = { error: "请求失败" };
     try {
       error = (await response.json()) as QueryErrorResponse;

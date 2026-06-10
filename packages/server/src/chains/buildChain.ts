@@ -8,6 +8,7 @@ import type {
   QuerySuccessResponse,
   QueryTiming,
   QueryTokenUsage,
+  RemoteProvider,
   RouteResult,
   StreamEvent,
 } from "@wensh/shared";
@@ -35,6 +36,39 @@ import { QueryChainError } from "./queryChainError.js";
 
 /** SSE 事件发送器 */
 export type StreamEmitter = (event: StreamEvent) => void;
+
+/** 解读阶段独立模型解析结果 */
+interface InterpretModelResolution {
+  model: ReturnType<typeof getModel>;
+  type: ModelType;
+  modelName: string;
+}
+
+/**
+ * 当 SPLIT_MODEL_INTERPRET=true 时，解读阶段强制走云端模型
+ * @param remoteProvider - 用户选择的远端提供商
+ */
+async function resolveInterpretModel(
+  remoteProvider?: RemoteProvider,
+): Promise<InterpretModelResolution | null> {
+  if (process.env.SPLIT_MODEL_INTERPRET !== "true") {
+    return null;
+  }
+
+  const resolved = await resolveQueryModel(
+    { type: "remote", routeSource: "rule" },
+    remoteProvider,
+  );
+  if (!resolved) {
+    return null;
+  }
+
+  return {
+    model: getModel("remote", resolved.remoteProvider),
+    type: "remote",
+    modelName: resolved.modelName,
+  };
+}
 
 /**
  * 从流式 chunk 提取文本增量
@@ -681,17 +715,29 @@ export async function runQueryChainStream(
       emit({ type: "phase", phase: "interpreting", message: "正在解读结果..." });
 
       const interpretStart = Date.now();
+      const interpretResolution = await resolveInterpretModel(remoteProvider);
+      const interpretModel = interpretResolution?.model ?? model;
+      const interpretModelUsed = interpretResolution?.type ?? resolved.type;
+      const interpretModelName = interpretResolution?.modelName ?? modelName;
+
       const { interpretation, chartHint, tokens } = await streamInterpretation(
-        model,
-        resolved.type,
+        interpretModel,
+        interpretModelUsed,
         request.question,
         rows,
         emit,
       );
 
-      accumulateQueryTokens(tokenUsage, resolved.type, tokens);
+      accumulateQueryTokens(tokenUsage, interpretModelUsed, tokens);
       response.interpretation = interpretation;
       response.chart_hint = chartHint;
+      if (
+        interpretResolution &&
+        (interpretModelUsed !== resolved.type || interpretModelName !== modelName)
+      ) {
+        response.interpret_model_used = interpretModelUsed;
+        response.interpret_model_name = interpretModelName;
+      }
       timing.interpret_ms = Date.now() - interpretStart;
       response.elapsed_ms = Date.now() - totalStart;
       response.token_usage = tokenUsage;

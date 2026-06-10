@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import type {
   FallbackReason,
   ModelType,
@@ -6,14 +7,25 @@ import type {
   TokenUsage,
 } from "@wensh/shared";
 
-defineProps<{
+const props = defineProps<{
   modelUsed: ModelType;
   modelName: string;
+  /** 解读阶段模型类型（split 模式） */
+  interpretModelUsed?: ModelType;
+  /** 解读阶段模型名称（split 模式） */
+  interpretModelName?: string;
   fallbackReason?: FallbackReason | null;
   routeSource?: RouteSource | null;
   routeReason?: string | null;
   tokenUsage?: TokenUsage;
 }>();
+
+/** 是否处于 SQL / 解读分模型模式 */
+const isSplitMode = computed(
+  () =>
+    Boolean(props.interpretModelUsed) &&
+    props.interpretModelUsed !== props.modelUsed,
+);
 
 /**
  * 格式化 Token 数量
@@ -39,17 +51,52 @@ function routeSourceLabel(source: RouteSource): string {
       return source;
   }
 }
+
+/**
+ * 模型类型中文标签
+ * @param type - local 或 remote
+ */
+function modelTypeLabel(type: ModelType): string {
+  return type === "local" ? "本地" : "云端";
+}
 </script>
 
 <template>
   <div class="model-badge">
-    <span
-      class="model-badge__type"
-      :class="modelUsed === 'local' ? 'model-badge__type--local' : 'model-badge__type--remote'"
-    >
-      {{ modelUsed === "local" ? "本地" : "云端" }}
-    </span>
-    <span class="model-badge__name">{{ modelName }}</span>
+    <template v-if="isSplitMode">
+      <div class="model-badge__split">
+        <span class="model-badge__stage">SQL</span>
+        <span
+          class="model-badge__type"
+          :class="modelUsed === 'local' ? 'model-badge__type--local' : 'model-badge__type--remote'"
+        >
+          {{ modelTypeLabel(modelUsed) }}
+        </span>
+        <span class="model-badge__name">{{ modelName }}</span>
+      </div>
+      <span class="model-badge__divider">/</span>
+      <div class="model-badge__split">
+        <span class="model-badge__stage">解读</span>
+        <span
+          class="model-badge__type"
+          :class="interpretModelUsed === 'local' ? 'model-badge__type--local' : 'model-badge__type--remote'"
+        >
+          {{ modelTypeLabel(interpretModelUsed!) }}
+        </span>
+        <span class="model-badge__name">{{ interpretModelName }}</span>
+      </div>
+    </template>
+
+    <template v-else>
+      <span
+        class="model-badge__type"
+        :class="modelUsed === 'local' ? 'model-badge__type--local' : 'model-badge__type--remote'"
+      >
+        {{ modelTypeLabel(modelUsed) }}
+      </span>
+      <span class="model-badge__name">{{ modelName }}</span>
+    </template>
+
     <span
       v-if="routeSource"
       class="model-badge__route"
@@ -78,6 +125,25 @@ function routeSourceLabel(source: RouteSource): string {
   align-items: center;
   gap: 8px;
   margin-bottom: 16px;
+}
+
+.model-badge__split {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-badge__stage {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.model-badge__divider {
+  font-size: 12px;
+  color: var(--text-muted);
+  opacity: 0.6;
 }
 
 .model-badge__type {

@@ -85,6 +85,25 @@ function messageTotalTokens(usage: QueryTokenUsage): TokenUsage {
 }
 
 /**
+ * 判断是否为 SQL / 解读分模型模式
+ * @param response - 查询成功响应
+ */
+function isSplitModelMode(response: NonNullable<ChatMessage["response"]>): boolean {
+  return (
+    Boolean(response.interpret_model_used) &&
+    response.interpret_model_used !== response.model_used
+  );
+}
+
+/**
+ * 模型类型中文标签
+ * @param type - local 或 remote
+ */
+function modelTypeLabel(type: "local" | "remote"): string {
+  return type === "local" ? "本地" : "云端";
+}
+
+/**
  * 从已成功消息构建 history（最多 2 轮）
  */
 function buildHistory(): HistoryItem[] {
@@ -122,13 +141,6 @@ function initRemoteProviderSelection(data: HealthResponse): void {
   const firstAvailable = data.remote_model.providers.find((item) => item.available);
   selectedRemoteProvider.value =
     firstAvailable?.provider ?? data.remote_model.default_provider;
-}
-
-/**
- * 跳转登录页
- */
-function goLogin(): void {
-  void router.push({ name: "login", query: { redirect: "/" } });
 }
 
 /**
@@ -316,88 +328,74 @@ onMounted(() => {
 
 <template>
   <div class="app">
-    <header class="header">
-      <div class="header__inner">
-        <div class="header__brand">
-          <h1 class="header__title">问数</h1>
-          <span class="header__subtitle">WenShu · MES 自然语言查数</span>
-        </div>
+    <aside class="sidebar">
+      <div class="sidebar__brand">
+        <h1 class="sidebar__title">问数</h1>
+        <span class="sidebar__subtitle">WenShu · MES 自然语言查数</span>
+      </div>
 
-        <div v-if="health" class="header__status">
-          <el-select
-            v-model="selectedDomain"
-            size="small"
-            class="header__select"
-            placeholder="业务域"
-          >
-            <el-option
-              v-for="item in DOMAIN_OPTIONS"
-              :key="item.value"
-              :label="item.label"
-              :value="item.value"
-            />
-          </el-select>
-          <StatusPill
-            v-for="item in health.domains"
-            :key="item.domain"
+      <template v-if="health">
+        <el-select
+          v-model="selectedDomain"
+          size="small"
+          class="sidebar__select"
+          placeholder="业务域"
+        >
+          <el-option
+            v-for="item in DOMAIN_OPTIONS"
+            :key="item.value"
             :label="item.label"
-            :online="item.api_available"
+            :value="item.value"
           />
+        </el-select>
+
+        <el-select
+          :model-value="selectedRemoteProvider"
+          size="small"
+          class="sidebar__select"
+          placeholder="云端模型"
+          @update:model-value="handleRemoteProviderChange"
+        >
+          <el-option
+            v-for="item in health.remote_model.providers"
+            :key="item.provider"
+            :label="item.label"
+            :value="item.provider"
+            :disabled="!item.available"
+          />
+        </el-select>
+
+        <div class="sidebar__status">
           <StatusPill
             label="本地模型"
             :online="health.local_model.available"
           />
-          <div class="header__provider">
-            <el-select
-              :model-value="selectedRemoteProvider"
-              size="small"
-              class="header__select"
-              placeholder="云端模型"
-              @update:model-value="handleRemoteProviderChange"
-            >
-              <el-option
-                v-for="item in health.remote_model.providers"
-                :key="item.provider"
-                :label="item.label"
-                :value="item.provider"
-                :disabled="!item.available"
-              />
-            </el-select>
-            <StatusPill
-              v-if="selectedProviderInfo"
-              :label="selectedProviderInfo.model_name"
-              :online="selectedProviderInfo.available"
-            />
-          </div>
           <StatusPill
             label="数据库"
             :online="health.database.available"
           />
-          <TokenStats
-            :local="sessionTokens.local"
-            :remote="sessionTokens.remote"
-          />
-          <span v-if="currentUser" class="header__user">{{ currentUser.username }}</span>
-          <button
-            v-else-if="health.auth?.enabled"
-            type="button"
-            class="btn-ghost"
-            @click="goLogin"
-          >
-            登录
-          </button>
-          <button
-            v-if="health.auth?.enabled && currentUser"
-            type="button"
-            class="btn-ghost"
-            @click="handleLogout"
-          >
-            退出
-          </button>
         </div>
-      </div>
-    </header>
+      </template>
 
+      <div class="sidebar__tokens">
+        <p class="sidebar__tokens-label">Token 用量</p>
+        <TokenStats
+          :local="sessionTokens.local"
+          :remote="sessionTokens.remote"
+        />
+      </div>
+
+      <div class="sidebar__spacer" />
+
+      <div v-if="health?.auth?.enabled && currentUser" class="sidebar__user">
+        <span class="sidebar__username">{{ currentUser.username }}</span>
+        <button type="button" class="btn-ghost btn-ghost--sm" @click="handleLogout">
+          退出
+        </button>
+      </div>
+    </aside>
+
+    <div class="content">
     <main class="main">
       <div class="main__toolbar">
         <button type="button" class="btn-ghost" @click="newConversation">
@@ -452,6 +450,8 @@ onMounted(() => {
             <ModelBadge
               :model-used="msg.response.model_used"
               :model-name="msg.response.model_name"
+              :interpret-model-used="msg.response.interpret_model_used"
+              :interpret-model-name="msg.response.interpret_model_name"
               :fallback-reason="msg.response.fallback_reason"
               :route-source="msg.response.route_source"
               :route-reason="msg.response.route_reason"
@@ -480,6 +480,13 @@ onMounted(() => {
               <span>{{ msg.response.row_count }} 行</span>
               <span class="meta-dot">·</span>
               <span>{{ msg.response.elapsed_ms }}ms</span>
+              <template v-if="isSplitModelMode(msg.response)">
+                <span class="meta-dot">·</span>
+                <span>
+                  SQL {{ modelTypeLabel(msg.response.model_used) }}
+                  / 解读 {{ modelTypeLabel(msg.response.interpret_model_used!) }}
+                </span>
+              </template>
               <span class="meta-dot">·</span>
               <span>
                 本地 {{ msg.response.token_usage.local.total_tokens.toLocaleString() }}
@@ -557,69 +564,105 @@ onMounted(() => {
         </div>
       </div>
     </footer>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .app {
-  min-height: 100vh;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  min-height: 100vh;
 }
 
-.header {
+.sidebar {
+  width: 210px;
+  flex-shrink: 0;
   position: sticky;
   top: 0;
-  z-index: 10;
-  background: rgb(255 255 255 / 85%);
-  backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--border);
-}
-
-.header__inner {
-  max-width: 880px;
-  margin: 0 auto;
-  padding: 16px 24px;
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  padding: 20px 16px;
+  gap: 14px;
 }
 
-.header__brand {
+.sidebar__brand {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
 }
 
-.header__title {
+.sidebar__title {
   margin: 0;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 700;
   letter-spacing: -0.02em;
 }
 
-.header__subtitle {
-  font-size: 12px;
+.sidebar__subtitle {
+  font-size: 11px;
   color: var(--text-muted);
+  line-height: 1.4;
 }
 
-.header__status {
+.sidebar__select {
+  width: 100%;
+}
+
+.sidebar__status {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.header__provider {
+.sidebar__tokens {
+  padding-top: 2px;
+}
+
+.sidebar__tokens-label {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  text-align: center;
+}
+
+.sidebar__spacer {
+  flex: 1;
+}
+
+.sidebar__user {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
 
-.header__select {
-  width: 130px;
+.sidebar__username {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
 }
 
 .main {
@@ -646,6 +689,11 @@ onMounted(() => {
   font-size: 13px;
   cursor: pointer;
   transition: background 0.15s;
+}
+
+.btn-ghost--sm {
+  padding: 4px 10px;
+  font-size: 12px;
 }
 
 .btn-ghost:hover {
@@ -905,7 +953,55 @@ onMounted(() => {
   background: color-mix(in srgb, var(--accent-primary) 4%, white);
 }
 
+@media (max-width: 768px) {
+  .sidebar {
+    width: 160px;
+    padding: 16px 12px;
+  }
+
+  .sidebar__title {
+    font-size: 17px;
+  }
+}
+
 @media (max-width: 640px) {
+  .app {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100%;
+    height: auto;
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 12px 16px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sidebar__brand {
+    width: 100%;
+    padding-bottom: 0;
+    border-bottom: none;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+  }
+
+  .sidebar__subtitle {
+    font-size: 11px;
+  }
+
+  .sidebar__spacer {
+    display: none;
+  }
+
+  .sidebar__tokens {
+    flex: 1;
+  }
+
   .footer__bar {
     flex-wrap: wrap;
   }
