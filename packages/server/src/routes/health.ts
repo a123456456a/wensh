@@ -7,6 +7,7 @@ import {
   isRemoteConfigured,
   listRemoteProviderOptions,
   resolveRemoteModelConfig,
+  getRouterConfig,
 } from "../chains/modelRouter.js";
 import { getRemoteProvider } from "../chains/remoteProvider.js";
 
@@ -44,6 +45,7 @@ healthRouter.get("/", async (_req, res) => {
       path: DB_PATH,
     },
     domains,
+    router: getRouterConfig(),
     auth: {
       enabled: process.env.AUTH_ENABLED === "true",
     },

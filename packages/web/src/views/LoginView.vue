@@ -65,7 +65,10 @@ onMounted(async () => {
 <template>
   <div class="login-page">
     <div class="login-card">
-      <h1 class="login-card__title">问数登录</h1>
+      <div class="login-card__brand">
+        <h1 class="login-card__title">问数</h1>
+        <p class="login-card__tagline">MES 自然语言查数</p>
+      </div>
       <p class="login-card__hint">演示账号：demo / demo123</p>
 
       <el-form label-position="top" @submit.prevent="handleLogin">
@@ -101,7 +104,18 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: var(--bg);
+  background: linear-gradient(135deg, var(--bg) 0%, color-mix(in srgb, var(--accent-primary) 6%, var(--bg)) 100%);
+}
+
+.login-card__brand {
+  margin-bottom: 4px;
+}
+
+.login-card__tagline {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 400;
 }
 
 .login-card {

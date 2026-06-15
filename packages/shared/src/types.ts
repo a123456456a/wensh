@@ -16,6 +16,19 @@ export type QueryResponseMode = "query" | "chat";
 /** 模型路由决策来源 */
 export type RouteSource = "rule" | "llm" | "rule_fallback";
 
+/** 模型路由模式（服务端 ROUTER_MODE） */
+export type RouterMode = "rule" | "llm" | "hybrid";
+
+/** GET /api/health 返回的路由配置摘要 */
+export interface RouterConfig {
+  mode: RouterMode;
+  row_threshold: number;
+  split_model_interpret: boolean;
+  router_use_local: boolean;
+  local_model_name: string;
+  router_timeout_ms: number;
+}
+
 /** 图表类型提示 */
 export type ChartHint = "bar" | "line" | "table";
 
@@ -176,6 +189,8 @@ export interface HealthResponse {
   };
   /** 各业务域 Data API 连通状态 */
   domains: DomainHealthItem[];
+  /** 本地/云端模型路由配置（只读，供前端展示） */
+  router: RouterConfig;
   /** 认证配置 */
   auth: {
     enabled: boolean;

@@ -23,6 +23,8 @@ export type {
   QueryTokenUsage,
   RemoteProvider,
   RemoteProviderOption,
+  RouterConfig,
+  RouterMode,
   RouteSource,
   StreamEvent,
   StreamPhase,

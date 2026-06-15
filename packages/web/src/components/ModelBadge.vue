@@ -178,6 +178,11 @@ function modelTypeLabel(type: ModelType): string {
   background: color-mix(in srgb, var(--text-muted) 10%, transparent);
 }
 
+.model-badge__route--rule {
+  color: var(--accent-local);
+  background: color-mix(in srgb, var(--accent-local) 8%, transparent);
+}
+
 .model-badge__route--llm {
   color: var(--accent-remote);
   background: color-mix(in srgb, var(--accent-remote) 8%, transparent);

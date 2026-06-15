@@ -121,6 +121,86 @@ export function matchTablesFromQuestion(
   return analyzeTableMatch(question, tablesMeta).tables;
 }
 
+/** 复杂查询关键词 → 倾向使用云端模型 */
+const COMPLEXITY_KEYWORDS: string[] = [
+  "对比",
+  "比较",
+  "关联",
+  "join",
+  "聚合",
+  "排名",
+  "top",
+  "趋势",
+  "同比",
+  "环比",
+  "交叉",
+  "分组统计",
+  "占比",
+  "比例",
+  "汇总",
+  "透视",
+  "环比",
+  "同比",
+];
+
+/**
+ * 判断问题是否包含复杂查询信号（多表 JOIN / 聚合 / 趋势等）
+ * @param question - 用户自然语言问题
+ */
+export function hasComplexitySignals(question: string): boolean {
+  const lower = question.toLowerCase();
+  return COMPLEXITY_KEYWORDS.some((kw) => lower.includes(kw.toLowerCase()));
+}
+
+/**
+ * 读取当前路由配置（供 health 接口与文档使用）
+ */
+export function getRouterConfig(): import("@wensh/shared").RouterConfig {
+  return {
+    mode: getRouterMode(),
+    row_threshold: Number(process.env.ROW_THRESHOLD ?? "10000"),
+    split_model_interpret: process.env.SPLIT_MODEL_INTERPRET === "true",
+    router_use_local: process.env.ROUTER_USE_LOCAL !== "false",
+    local_model_name: process.env.LOCAL_MODEL_NAME ?? "Qwen3.5-27B",
+    router_timeout_ms: Number(process.env.ROUTER_TIMEOUT_MS ?? "15000"),
+  };
+}
+
+/**
+ * 生成规则路由的人类可读理由
+ * @param analysis - 关键词匹配分析
+ * @param preferred - 规则判定的首选模型
+ * @param question - 用户问题
+ */
+export function buildRuleRouteReason(
+  analysis: TableMatchAnalysis,
+  preferred: ModelType,
+  question: string,
+): string {
+  if (hasComplexitySignals(question)) {
+    return "复杂查询（对比/聚合/趋势等）";
+  }
+
+  if (analysis.noKeywordMatch) {
+    return preferred === "remote"
+      ? "未命中表关键词，按全表集保守路由"
+      : "未命中表关键词，表规模较小";
+  }
+
+  if (analysis.keywordMatched.length > 1) {
+    const names = analysis.keywordMatched.map((t) => t.label).join("、");
+    return preferred === "remote"
+      ? `多表查询（${names}）`
+      : `多表但均为小表（${names}）`;
+  }
+
+  const table = analysis.keywordMatched[0];
+  if (table.tier === "large") {
+    return `涉及大表「${table.label}」`;
+  }
+  return `单表小表「${table.label}」`;
+}
+
 /**
  * 根据表 tier 决定首选模型（任一 large 表 → remote）
  * @param tables - 匹配到的表元数据
@@ -128,6 +208,21 @@ export function matchTablesFromQuestion(
 export function getPreferredModelTypeFromTables(tables: TableMeta[]): ModelType {
   const hasLarge = tables.some((t) => t.tier === "large");
   return hasLarge ? "remote" : "local";
+}
+
+/**
+ * 综合表匹配与复杂度信号，决定规则路由首选模型
+ * @param analysis - 关键词匹配分析
+ * @param question - 用户问题
+ */
+export function getPreferredModelTypeFromAnalysis(
+  analysis: TableMatchAnalysis,
+  question: string,
+): ModelType {
+  if (hasComplexitySignals(question)) {
+    return "remote";
+  }
+  return getPreferredModelTypeFromTables(analysis.tables);
 }
 
 /**
@@ -324,8 +419,9 @@ export async function routeModelWithMeta(
   tablesMeta: TableMeta[],
 ): Promise<RouteResult> {
   const analysis = analyzeTableMatch(question, tablesMeta);
-  const preferred = getPreferredModelTypeFromTables(analysis.tables);
-  return applyModelRoute(preferred, { routeSource: "rule" });
+  const preferred = getPreferredModelTypeFromAnalysis(analysis, question);
+  const routeReason = buildRuleRouteReason(analysis, preferred, question);
+  return applyModelRoute(preferred, { routeSource: "rule", routeReason });
 }
 
 /**
@@ -348,22 +444,34 @@ export async function routeModelForQuery(
       return await routeModelWithLlm(question, tablesMeta);
     } catch {
       const analysis = analyzeTableMatch(question, tablesMeta);
-      const preferred = getPreferredModelTypeFromTables(analysis.tables);
-      return applyModelRoute(preferred, { routeSource: "rule_fallback" });
+      const preferred = getPreferredModelTypeFromAnalysis(analysis, question);
+      const routeReason = buildRuleRouteReason(analysis, preferred, question);
+      return applyModelRoute(preferred, {
+        routeSource: "rule_fallback",
+        routeReason,
+      });
     }
   }
 
   const analysis = analyzeTableMatch(question, tablesMeta);
-  if (isHighConfidenceRuleRoute(analysis)) {
-    const preferred = getPreferredModelTypeFromTables(analysis.tables);
-    return applyModelRoute(preferred, { routeSource: "rule" });
+  const useRulePath =
+    isHighConfidenceRuleRoute(analysis) || hasComplexitySignals(question);
+
+  if (useRulePath) {
+    const preferred = getPreferredModelTypeFromAnalysis(analysis, question);
+    const routeReason = buildRuleRouteReason(analysis, preferred, question);
+    return applyModelRoute(preferred, { routeSource: "rule", routeReason });
   }
 
   try {
     return await routeModelWithLlm(question, tablesMeta);
   } catch {
-    const preferred = getPreferredModelTypeFromTables(analysis.tables);
-    return applyModelRoute(preferred, { routeSource: "rule_fallback" });
+    const preferred = getPreferredModelTypeFromAnalysis(analysis, question);
+    const routeReason = buildRuleRouteReason(analysis, preferred, question);
+    return applyModelRoute(preferred, {
+      routeSource: "rule_fallback",
+      routeReason,
+    });
   }
 }
 

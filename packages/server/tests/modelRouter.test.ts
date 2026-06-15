@@ -3,10 +3,14 @@ import * as modelRouter from "../src/chains/modelRouter.js";
 import {
   analyzeTableMatch,
   buildRouterPrompt,
+  buildRuleRouteReason,
   extractTableNames,
   getPreferredModelType,
+  getPreferredModelTypeFromAnalysis,
   getPreferredModelTypeFromTables,
+  getRouterConfig,
   getRouterMode,
+  hasComplexitySignals,
   isHighConfidenceRuleRoute,
   matchTablesFromQuestion,
   parseLlmRouterDecision,
@@ -273,5 +277,84 @@ describe("modelRouter", () => {
       "qwen",
     );
     expect(resolved).toBeNull();
+  });
+
+  it("hasComplexitySignals detects aggregation and trend keywords", () => {
+    expect(hasComplexitySignals("各产线良率对比")).toBe(true);
+    expect(hasComplexitySignals("近7天OEE趋势")).toBe(true);
+    expect(hasComplexitySignals("列出所有产线")).toBe(false);
+  });
+
+  it("getPreferredModelTypeFromAnalysis routes complexity to remote", () => {
+    const meta = [
+      {
+        name: "production_line",
+        label: "产线",
+        tier: "small" as const,
+        keywords: ["产线"],
+      },
+    ];
+    const analysis = analyzeTableMatch("各产线产能对比", meta);
+    expect(getPreferredModelTypeFromAnalysis(analysis, "各产线产能对比")).toBe(
+      "remote",
+    );
+  });
+
+  it("buildRuleRouteReason explains complexity and large tables", () => {
+    const meta = [
+      {
+        name: "work_order",
+        label: "工单",
+        tier: "large" as const,
+        keywords: ["工单"],
+      },
+    ];
+    const analysis = analyzeTableMatch("在制工单数量", meta);
+    expect(
+      buildRuleRouteReason(analysis, "remote", "在制工单数量"),
+    ).toContain("大表");
+    expect(
+      buildRuleRouteReason(analysis, "remote", "工单完成率对比"),
+    ).toContain("复杂查询");
+  });
+
+  it("routeModelForQuery hybrid uses rule for complexity on single table", async () => {
+    process.env.ROUTER_MODE = "hybrid";
+    process.env.LOCAL_BASE_URL = "http://localhost:8000/v1";
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("{}", { status: 200 }),
+    );
+
+    const meta = [
+      {
+        name: "production_line",
+        label: "产线",
+        tier: "small" as const,
+        keywords: ["产线"],
+      },
+    ];
+
+    const result = await routeModelForQuery("各产线产能对比", meta);
+    expect(result.type).toBe("remote");
+    expect(result.routeSource).toBe("rule");
+    expect(result.routeReason).toContain("复杂查询");
+  });
+
+  it("getRouterConfig reflects env settings", () => {
+    process.env.ROUTER_MODE = "rule";
+    process.env.ROW_THRESHOLD = "5000";
+    process.env.SPLIT_MODEL_INTERPRET = "true";
+    process.env.ROUTER_USE_LOCAL = "false";
+    process.env.LOCAL_MODEL_NAME = "TestModel";
+
+    const config = getRouterConfig();
+    expect(config).toEqual({
+      mode: "rule",
+      row_threshold: 5000,
+      split_model_interpret: true,
+      router_use_local: false,
+      local_model_name: "TestModel",
+      router_timeout_ms: 15000,
+    });
   });
 });

@@ -20,6 +20,10 @@ pnpm test              # 运行单元测试
 
 详细设计见 [wensh-plan.md](./wensh-plan.md)。
 
+## 本地/云端模型路由
+
+问数会根据问题复杂度、表规模与 Router LLM 自动在本地 vLLM 与云端 API 间切换，支持降级与分阶段模型。完整规则说明见 **[docs/model-routing.md](./docs/model-routing.md)**。
+
 ## 公司演示文稿（Slidev）
 
 面向内部汇报的 PPT 见 [packages/slides](./packages/slides/)：

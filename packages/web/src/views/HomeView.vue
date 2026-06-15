@@ -26,6 +26,8 @@ import TokenStats from "../components/TokenStats.vue";
 import StatusPill from "../components/StatusPill.vue";
 import StreamProgress from "../components/StreamProgress.vue";
 import StreamingText from "../components/StreamingText.vue";
+import RouteRulesPanel from "../components/RouteRulesPanel.vue";
+import DomainStatusList from "../components/DomainStatusList.vue";
 import {
   loadSavedRemoteProvider,
   saveRemoteProvider,
@@ -48,6 +50,26 @@ const samplePopoverVisible = ref(false);
 const sampleQuestions = computed(
   () => DOMAIN_SAMPLE_QUESTIONS[selectedDomain.value],
 );
+
+/** 当前域的健康信息 */
+const selectedDomainHealth = computed(() =>
+  health.value?.domains.find((d) => d.domain === selectedDomain.value),
+);
+
+/** 路由模式中文标签 */
+const routerModeLabel = computed(() => {
+  const mode = health.value?.router.mode;
+  switch (mode) {
+    case "rule":
+      return "规则";
+    case "llm":
+      return "LLM";
+    case "hybrid":
+      return "混合";
+    default:
+      return "";
+  }
+});
 
 /** 当前选中提供商的展示信息 */
 const selectedProviderInfo = computed(() => {
@@ -335,46 +357,72 @@ onMounted(() => {
       </div>
 
       <template v-if="health">
-        <el-select
-          v-model="selectedDomain"
-          size="small"
-          class="sidebar__select"
-          placeholder="业务域"
-        >
-          <el-option
-            v-for="item in DOMAIN_OPTIONS"
-            :key="item.value"
-            :label="item.label"
-            :value="item.value"
+        <section class="sidebar__section">
+          <h2 class="sidebar__section-title">数据源</h2>
+          <el-select
+            v-model="selectedDomain"
+            size="small"
+            class="sidebar__select"
+            placeholder="业务域"
+          >
+            <el-option
+              v-for="item in DOMAIN_OPTIONS"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            />
+          </el-select>
+          <DomainStatusList
+            :domains="health.domains"
+            :selected="selectedDomain"
           />
-        </el-select>
+          <p
+            v-if="selectedDomainHealth && !selectedDomainHealth.api_available"
+            class="sidebar__warning"
+          >
+            当前域 API 未连通，查询可能失败
+          </p>
+        </section>
 
-        <el-select
-          :model-value="selectedRemoteProvider"
-          size="small"
-          class="sidebar__select"
-          placeholder="云端模型"
-          @update:model-value="handleRemoteProviderChange"
-        >
-          <el-option
-            v-for="item in health.remote_model.providers"
-            :key="item.provider"
-            :label="item.label"
-            :value="item.provider"
-            :disabled="!item.available"
-          />
-        </el-select>
+        <section class="sidebar__section">
+          <h2 class="sidebar__section-title">云端模型</h2>
+          <el-select
+            :model-value="selectedRemoteProvider"
+            size="small"
+            class="sidebar__select"
+            placeholder="云端模型"
+            @update:model-value="handleRemoteProviderChange"
+          >
+            <el-option
+              v-for="item in health.remote_model.providers"
+              :key="item.provider"
+              :label="item.label"
+              :value="item.provider"
+              :disabled="!item.available"
+            />
+          </el-select>
+          <p v-if="selectedProviderInfo" class="sidebar__model-hint">
+            {{ selectedProviderInfo.model_name }}
+          </p>
+        </section>
 
-        <div class="sidebar__status">
-          <StatusPill
-            label="本地模型"
-            :online="health.local_model.available"
-          />
-          <StatusPill
-            label="数据库"
-            :online="health.database.available"
-          />
-        </div>
+        <section class="sidebar__section">
+          <h2 class="sidebar__section-title">系统状态</h2>
+          <div class="sidebar__status">
+            <StatusPill
+              label="本地模型"
+              :online="health.local_model.available"
+            />
+            <StatusPill
+              label="数据库"
+              :online="health.database.available"
+            />
+          </div>
+        </section>
+
+        <section v-if="health.router" class="sidebar__section">
+          <RouteRulesPanel :router="health.router" />
+        </section>
       </template>
 
       <div class="sidebar__tokens">
@@ -404,9 +452,17 @@ onMounted(() => {
       </div>
 
       <div v-if="messages.length === 0" class="empty">
-        <div class="empty__icon">💬</div>
+        <div class="empty__icon">
+          <svg width="48" height="48" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+            <rect x="6" y="10" width="36" height="28" rx="6" stroke="currentColor" stroke-width="2" opacity="0.3" />
+            <path d="M14 22h20M14 28h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.5" />
+          </svg>
+        </div>
         <p class="empty__title">开始提问</p>
-        <p class="empty__hint">用自然语言查询 MES 数据，支持流式输出与 Token 统计</p>
+        <p class="empty__hint">
+          用自然语言查询制造数据，系统自动在本地/云端模型间路由
+          <span v-if="routerModeLabel" class="empty__mode">· {{ routerModeLabel }}模式</span>
+        </p>
         <div class="empty__samples">
           <button
             v-for="q in sampleQuestions"
@@ -576,18 +632,18 @@ onMounted(() => {
 }
 
 .sidebar {
-  width: 210px;
+  width: 240px;
   flex-shrink: 0;
   position: sticky;
   top: 0;
   height: 100vh;
   overflow-y: auto;
-  background: var(--surface);
+  background: linear-gradient(180deg, var(--surface) 0%, color-mix(in srgb, var(--bg) 40%, var(--surface)) 100%);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   padding: 20px 16px;
-  gap: 14px;
+  gap: 12px;
 }
 
 .sidebar__brand {
@@ -613,6 +669,38 @@ onMounted(() => {
 
 .sidebar__select {
   width: 100%;
+}
+
+.sidebar__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar__section-title {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.sidebar__model-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding-left: 2px;
+}
+
+.sidebar__warning {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--accent-warning);
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent-warning) 8%, transparent);
 }
 
 .sidebar__status {
@@ -706,9 +794,14 @@ onMounted(() => {
 }
 
 .empty__icon {
-  font-size: 40px;
   margin-bottom: 16px;
-  opacity: 0.6;
+  color: var(--accent-primary);
+  opacity: 0.7;
+}
+
+.empty__mode {
+  color: var(--accent-primary);
+  font-weight: 500;
 }
 
 .empty__title {
