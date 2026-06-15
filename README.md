@@ -4,6 +4,8 @@ MES 自然语言查数 Demo：LangChain.js + Vue3 + SQLite，支持本地/远端
 
 ## 快速开始
 
+**第一次使用？** 请看小白版手把手教程：[docs/getting-started-beginner.md](./docs/getting-started-beginner.md)
+
 ```bash
 pnpm install
 cp .env.example .env   # 填写 REMOTE_PROVIDER 与对应 API Key
