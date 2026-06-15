@@ -8,6 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "seed": "tsx src/db/seed.ts",
+    "mock:domain": "tsx scripts/mock-domain-api.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
